@@ -2,47 +2,87 @@
 
 
 define('forum/topic/votes', [
-	'components', 'translator', 'benchpress', 'api', 'hooks',
-], function (components, translator, Benchpress, api, hooks) {
-	var Votes = {};
+	'components', 'translator', 'api', 'hooks', 'bootbox', 'alerts', 'bootstrap',
+], function (components, translator, api, hooks, bootbox, alerts, bootstrap) {
+	const Votes = {};
+	let _showTooltip = {};
 
 	Votes.addVoteHandler = function () {
-		components.get('topic').on('mouseenter', '[data-pid] [component="post/vote-count"]', loadDataAndCreateTooltip);
+		_showTooltip = {};
+		if (canSeeUpVotes()) {
+			components.get('topic').on('mouseenter', '[data-pid] [component="post/vote-count"]', loadDataAndCreateTooltip);
+			components.get('topic').on('mouseleave', '[data-pid] [component="post/vote-count"]', destroyTooltip);
+		}
+
+		components.get('topic').on('mouseenter', '[data-pid] [component="post/announce-count"]', loadDataAndCreateTooltip);
+		components.get('topic').on('mouseleave', '[data-pid] [component="post/announce-count"]', destroyTooltip);
 	};
 
-	function loadDataAndCreateTooltip(e) {
-		e.stopPropagation();
+	function canSeeUpVotes() {
+		const { upvoteVisibility, privileges } = ajaxify.data;
+		return privileges.isAdminOrMod ||
+			upvoteVisibility === 'all' ||
+			(upvoteVisibility === 'loggedin' && config.loggedIn);
+	}
 
-		var $this = $(this);
-		var el = $this.parent();
-		el.find('.tooltip').css('display', 'none');
-		var pid = el.parents('[data-pid]').attr('data-pid');
+	function canSeeVotes() {
+		const { upvoteVisibility, downvoteVisibility, privileges } = ajaxify.data;
+		return privileges.isAdminOrMod ||
+			upvoteVisibility === 'all' || downvoteVisibility === 'all' ||
+			((upvoteVisibility === 'loggedin' || downvoteVisibility === 'loggedin') && config.loggedIn);
+	}
 
-		socket.emit('posts.getUpvoters', [pid], function (err, data) {
+	function destroyTooltip() {
+		const $this = $(this);
+		const pid = $this.parents('[data-pid]').attr('data-pid');
+		const tooltip = bootstrap.Tooltip.getInstance(this);
+		if (tooltip) {
+			tooltip.dispose();
+			$this.attr('title', '');
+		}
+		_showTooltip[pid] = false;
+	}
+
+	function loadDataAndCreateTooltip() {
+		const $this = $(this);
+		const el = $this.parent();
+		const pid = el.parents('[data-pid]').attr('data-pid');
+		_showTooltip[pid] = true;
+		const tooltip = bootstrap.Tooltip.getInstance(this);
+		if (tooltip) {
+			tooltip.dispose();
+			$this.attr('title', '');
+		}
+		const path = $this.attr('component') === 'post/vote-count' ?
+			`/posts/${encodeURIComponent(pid)}/upvoters` :
+			`/posts/${encodeURIComponent(pid)}/announcers/tooltip`;
+
+		api.get(path, {}, function (err, data) {
 			if (err) {
-				return app.alertError(err.message);
+				return alerts.error(err);
 			}
-
-			if (data.length) {
-				createTooltip($this, data[0]);
+			if (_showTooltip[pid] && data) {
+				createTooltip($this, data);
 			}
 		});
-		return false;
 	}
 
 	function createTooltip(el, data) {
 		function doCreateTooltip(title) {
-			el.attr('title', title).tooltip('fixTitle').tooltip('show');
-			el.parent().find('.tooltip').css('display', '');
+			el.attr('title', title);
+			(new bootstrap.Tooltip(el, {
+				container: '#content',
+				html: true,
+			})).show();
 		}
-		var usernames = data.usernames
-			.filter(name => name !== '[[global:former_user]]');
+		let usernames = data.usernames
+			.filter(name => name !== '[[global:former-user]]');
 		if (!usernames.length) {
 			return;
 		}
-		if (usernames.length + data.otherCount > 6) {
+		if (usernames.length + data.otherCount > data.cutoff) {
 			usernames = usernames.join(', ').replace(/,/g, '|');
-			translator.translate('[[topic:users_and_others, ' + usernames + ', ' + data.otherCount + ']]', function (translated) {
+			translator.translate('[[topic:users-and-others, ' + usernames + ', ' + data.otherCount + ']]', function (translated) {
 				translated = translated.replace(/\|/g, ',');
 				doCreateTooltip(translated);
 			});
@@ -54,21 +94,20 @@ define('forum/topic/votes', [
 
 
 	Votes.toggleVote = function (button, className, delta) {
-		var post = button.closest('[data-pid]');
-		var currentState = post.find(className).length;
+		const post = button.closest('[data-pid]');
+		const currentState = post.find(className).length;
 
 		const method = currentState ? 'del' : 'put';
-		var pid = post.attr('data-pid');
-		api[method](`/posts/${pid}/vote`, {
+		const pid = post.attr('data-pid');
+		api[method](`/posts/${encodeURIComponent(pid)}/vote`, {
 			delta: delta,
 		}, function (err) {
 			if (err) {
-				// TODO: err.message is currently hardcoded in helpers/api.js
-				if (err.message === 'A valid login session was not found. Please log in and try again.') {
+				if (!app.user.uid) {
 					ajaxify.go('login');
 					return;
 				}
-				return app.alertError(err.message);
+				return alerts.error(err);
 			}
 			hooks.fire('action:post.toggleVote', {
 				pid: pid,
@@ -81,22 +120,22 @@ define('forum/topic/votes', [
 	};
 
 	Votes.showVotes = function (pid) {
-		socket.emit('posts.getVoters', { pid: pid, cid: ajaxify.data.cid }, function (err, data) {
+		if (!canSeeVotes()) {
+			return;
+		}
+		api.get(`/posts/${encodeURIComponent(pid)}/voters`, {}, function (err, data) {
 			if (err) {
-				if (err.message === '[[error:no-privileges]]') {
-					return;
-				}
-
-				// Only show error if it's an unexpected error.
-				return app.alertError(err.message);
+				return alerts.error(err);
 			}
 
-			app.parseAndTranslate('partials/modals/votes_modal', data, function (html) {
-				var dialog = bootbox.dialog({
+			app.parseAndTranslate('modals/votes', data, function (html) {
+				const dialog = bootbox.dialog({
 					title: '[[global:voters]]',
 					message: html,
 					className: 'vote-modal',
 					show: true,
+					onEscape: true,
+					backdrop: true,
 				});
 
 				dialog.on('click', function () {
@@ -106,6 +145,24 @@ define('forum/topic/votes', [
 		});
 	};
 
+	Votes.showAnnouncers = async function (pid) {
+		const data = await api.get(`/posts/${encodeURIComponent(pid)}/announcers`, {})
+			.catch(err => alerts.error(err));
+
+		const html = await app.parseAndTranslate('modals/announcers', data);
+		const dialog = bootbox.dialog({
+			title: `[[topic:announcers-x, ${data.announceCount}]]`,
+			message: html,
+			className: 'announce-modal',
+			show: true,
+			onEscape: true,
+			backdrop: true,
+		});
+
+		dialog.on('click', function () {
+			dialog.modal('hide');
+		});
+	};
 
 	return Votes;
 });

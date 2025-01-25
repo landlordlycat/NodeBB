@@ -8,7 +8,7 @@
 			<table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
 				<tr>
 					<td style="padding: 40px 40px 6px 40px; font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif,Apple Color Emoji,Segoe UI Emoji,Segoe UI Symbol; font-size: 15px; line-height: 20px; color: #555555;">
-						<h1 style="margin: 0; font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif,Apple Color Emoji,Segoe UI Emoji,Segoe UI Symbol; font-size: 24px; line-height: 27px; color: #333333; font-weight: normal;">[[email:greeting_with_name, {username}]]</h1>
+						<h1 style="margin: 0; font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif,Apple Color Emoji,Segoe UI Emoji,Segoe UI Symbol; font-size: 24px; line-height: 27px; color: #333333; font-weight: normal;">[[email:greeting-with-name, {username}]]</h1>
 					</td>
 				</tr>
 				<tr>
@@ -16,7 +16,7 @@
 						<h1 style="margin: 0 0 10px 0; font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif,Apple Color Emoji,Segoe UI Emoji,Segoe UI Symbol; font-size: 18px; line-height: 21px; color: #aaaaaa; font-weight: normal;">[[email:banned.text1, {username}, {site_title}]]</h1>
 					</td>
 				</tr>
-				<!-- IF reason -->
+				{{{ if reason }}}
 				<tr>
 					<td style="padding: 20px 40px; font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif,Apple Color Emoji,Segoe UI Emoji,Segoe UI Symbol; font-size: 15px; line-height: 20px; color: #555555;">
 						<p style="margin: 0;">
@@ -27,8 +27,8 @@
 						</p>
 					</td>
 				</tr>
-				<!-- ENDIF reason -->
-				<!-- IF until -->
+				{{{ end }}}
+				{{{ if until }}}
 				<tr>
 					<td style="padding: 20px 40px; font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif,Apple Color Emoji,Segoe UI Emoji,Segoe UI Symbol; font-size: 15px; line-height: 20px; color: #555555;">
 						<p style="margin: 0;">
@@ -36,7 +36,7 @@
 						</p>
 					</td>
 				</tr>
-				<!-- ENDIF until -->
+				{{{ end }}}
 			</table>
 		</td>
 	</tr>

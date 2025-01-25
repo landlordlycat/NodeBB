@@ -9,7 +9,6 @@ const db = require('../database');
 const file = require('../file');
 const image = require('../image');
 const meta = require('../meta');
-const plugins = require('../plugins');
 
 module.exports = function (User) {
 	User.getAllowedProfileImageExtensions = function () {
@@ -21,11 +20,7 @@ module.exports = function (User) {
 	};
 
 	User.getAllowedImageTypes = function () {
-		const allowedTypes = ['image/png', 'image/jpeg', 'image/bmp'];
-		if (plugins.hooks.hasListeners('filter:image.isFileTypeAllowed')) {
-			allowedTypes.push('image/gif');
-		}
-		return allowedTypes;
+		return ['image/png', 'image/jpeg', 'image/bmp', 'image/gif'];
 	};
 
 	User.updateCoverPosition = async function (uid, position) {
@@ -55,7 +50,7 @@ module.exports = function (User) {
 
 			const extension = file.typeToExtension(image.mimeFromBase64(data.imageData));
 			const filename = `${data.uid}-profilecover-${Date.now()}${extension}`;
-			const uploadData = await image.uploadImage(filename, 'profile', picture);
+			const uploadData = await image.uploadImage(filename, `profile/uid-${data.uid}`, picture);
 
 			await deleteCurrentPicture(data.uid, 'cover:url');
 			await User.setUserField(data.uid, 'cover:url', uploadData.url);
@@ -101,7 +96,7 @@ module.exports = function (User) {
 		});
 
 		const filename = generateProfileImageFilename(data.uid, extension);
-		const uploadedImage = await image.uploadImage(filename, 'profile', {
+		const uploadedImage = await image.uploadImage(filename, `profile/uid-${data.uid}`, {
 			uid: data.uid,
 			path: newPath,
 			name: 'profileAvatar',
@@ -145,7 +140,7 @@ module.exports = function (User) {
 			});
 
 			const filename = generateProfileImageFilename(data.uid, extension);
-			const uploadedImage = await image.uploadImage(filename, 'profile', picture);
+			const uploadedImage = await image.uploadImage(filename, `profile/uid-${data.uid}`, picture);
 
 			await deleteCurrentPicture(data.uid, 'uploadedpicture');
 			await User.updateProfile(data.callerUid, {
@@ -229,10 +224,10 @@ module.exports = function (User) {
 
 	async function getPicturePath(uid, field) {
 		const value = await User.getUserField(uid, field);
-		if (!value || !value.startsWith(`${nconf.get('relative_path')}/assets/uploads/profile/`)) {
+		if (!value || !value.startsWith(`${nconf.get('relative_path')}/assets/uploads/profile/uid-${uid}`)) {
 			return false;
 		}
 		const filename = value.split('/').pop();
-		return path.join(nconf.get('upload_path'), 'profile', filename);
+		return path.join(nconf.get('upload_path'), `profile/uid-${uid}`, filename);
 	}
 };

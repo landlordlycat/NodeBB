@@ -3,13 +3,17 @@
 
 const _ = require('lodash');
 const validator = require('validator');
+const nconf = require('nconf');
 
 const db = require('../database');
 const user = require('../user');
 const posts = require('../posts');
 const meta = require('../meta');
+const activitypub = require('../activitypub');
 const plugins = require('../plugins');
-const utils = require('../../public/src/utils');
+const utils = require('../utils');
+
+const backlinkRegex = new RegExp(`(?:${nconf.get('url').replace('/', '\\/')}|\b|\\s)\\/topic\\/(\\d+)(?:\\/\\w+)?`, 'g');
 
 module.exports = function (Topics) {
 	Topics.onNewPostMade = async function (postData) {
@@ -17,12 +21,88 @@ module.exports = function (Topics) {
 		await Topics.addPostToTopic(postData.tid, postData);
 	};
 
-	Topics.getTopicPosts = async function (tid, set, start, stop, uid, reverse) {
-		const postData = await posts.getPostsFromSet(set, start, stop, uid, reverse);
-		Topics.calculatePostIndices(postData, start);
+	Topics.getTopicPosts = async function (topicData, set, start, stop, uid, reverse) {
+		if (!topicData) {
+			return [];
+		}
 
-		return await Topics.addPostData(postData, uid);
+		let repliesStart = start;
+		let repliesStop = stop;
+		if (stop > 0) {
+			repliesStop -= 1;
+			if (start > 0) {
+				repliesStart -= 1;
+			}
+		}
+		let pids = [];
+		if (start !== 0 || stop !== 0) {
+			pids = await posts.getPidsFromSet(set, repliesStart, repliesStop, reverse);
+		}
+		if (!pids.length && !topicData.mainPid) {
+			return [];
+		}
+
+		if (topicData.mainPid && start === 0) {
+			pids.unshift(topicData.mainPid);
+		}
+		let postData = await posts.getPostsByPids(pids, uid);
+		if (!postData.length) {
+			return [];
+		}
+		let replies = postData;
+		if (topicData.mainPid && start === 0) {
+			postData[0].index = 0;
+			replies = postData.slice(1);
+		}
+
+		Topics.calculatePostIndices(replies, repliesStart);
+		await addEventStartEnd(postData, set, reverse, topicData);
+		const allPosts = postData.slice();
+		postData = await user.blocks.filter(uid, postData);
+		if (allPosts.length !== postData.length) {
+			const includedPids = new Set(postData.map(p => p.pid));
+			allPosts.reverse().forEach((p, index) => {
+				if (!includedPids.has(p.pid) && allPosts[index + 1] && !reverse) {
+					allPosts[index + 1].eventEnd = p.eventEnd;
+				}
+			});
+		}
+
+		const result = await plugins.hooks.fire('filter:topic.getPosts', {
+			topic: topicData,
+			uid: uid,
+			posts: await Topics.addPostData(postData, uid),
+		});
+		return result.posts;
 	};
+
+	async function addEventStartEnd(postData, set, reverse, topicData) {
+		if (!postData.length) {
+			return;
+		}
+		postData.forEach((p, index) => {
+			if (p && p.index === 0 && reverse) {
+				p.eventStart = topicData.lastposttime;
+				p.eventEnd = Date.now();
+			} else if (p && postData[index + 1]) {
+				p.eventStart = reverse ? postData[index + 1].timestamp : p.timestamp;
+				p.eventEnd = reverse ? p.timestamp : postData[index + 1].timestamp;
+			}
+		});
+		const lastPost = postData[postData.length - 1];
+		if (lastPost) {
+			lastPost.eventStart = reverse ? topicData.timestamp : lastPost.timestamp;
+			lastPost.eventEnd = reverse ? lastPost.timestamp : Date.now();
+			if (lastPost.index) {
+				const nextPost = await db[reverse ? 'getSortedSetRevRangeWithScores' : 'getSortedSetRangeWithScores'](set, lastPost.index, lastPost.index);
+				if (reverse) {
+					lastPost.eventStart = nextPost.length ? nextPost[0].score : lastPost.eventStart;
+				} else {
+					lastPost.eventEnd = nextPost.length ? nextPost[0].score : lastPost.eventEnd;
+				}
+			}
+		}
+	}
 
 	Topics.addPostData = async function (postData, uid) {
 		if (!Array.isArray(postData) || !postData.length) {
@@ -31,7 +111,9 @@ module.exports = function (Topics) {
 		const pids = postData.map(post => post && post.pid);
 
 		async function getPostUserData(field, method) {
-			const uids = _.uniq(postData.filter(p => p && parseInt(p[field], 10) >= 0).map(p => p[field]));
+			const uids = _.uniq(postData
+				.filter(p => p && (activitypub.helpers.isUri(p[field]) || parseInt(p[field], 10) >= 0))
+				.map(p => p[field]));
 			const userData = await method(uids);
 			return _.zipObject(uids, userData);
 		}
@@ -46,7 +128,7 @@ module.exports = function (Topics) {
 			posts.getVoteStatusByPostIDs(pids, uid),
 			getPostUserData('uid', async uids => await posts.getUserInfoForPosts(uids, uid)),
 			getPostUserData('editor', async uids => await user.getUsersFields(uids, ['uid', 'username', 'userslug'])),
-			getPostReplies(pids, uid),
+			getPostReplies(postData, uid),
 			Topics.addParentPosts(postData),
 		]);
 
@@ -97,7 +179,9 @@ module.exports = function (Topics) {
 	};
 
 	Topics.addParentPosts = async function (postData) {
-		let parentPids = postData.map(postObj => (postObj && postObj.hasOwnProperty('toPid') ? parseInt(postObj.toPid, 10) : null)).filter(Boolean);
+		let parentPids = postData
+			.filter(p => p && p.hasOwnProperty('toPid') && (activitypub.helpers.isUri(p.toPid) || utils.isNumber(p.toPid)))
+			.map(postObj => postObj.toPid);
 
 		if (!parentPids.length) {
 			return;
@@ -107,17 +191,21 @@ module.exports = function (Topics) {
 		const parentUids = _.uniq(parentPosts.map(postObj => postObj && postObj.uid));
 		const userData = await user.getUsersFields(parentUids, ['username']);
 
-		const usersMap = {};
-		userData.forEach((user) => {
-			usersMap[user.uid] = user.username;
-		});
+		const usersMap = _.zipObject(parentUids, userData);
 		const parents = {};
 		parentPosts.forEach((post, i) => {
-			parents[parentPids[i]] = { username: usersMap[post.uid] };
+			if (usersMap[post.uid]) {
+				parents[parentPids[i]] = {
+					username: usersMap[post.uid].username,
+					displayname: usersMap[post.uid].displayname,
+				};
+			}
 		});
 
 		postData.forEach((post) => {
-			post.parent = parents[post.toPid];
+			if (parents[post.toPid]) {
+				post.parent = parents[post.toPid];
+			}
 		});
 	};
 
@@ -150,7 +238,7 @@ module.exports = function (Topics) {
 			}
 			isDeleted = await posts.getPostField(pids[0], 'deleted');
 			if (!isDeleted) {
-				return parseInt(pids[0], 10);
+				return pids[0];
 			}
 			index += 1;
 		} while (isDeleted);
@@ -158,7 +246,7 @@ module.exports = function (Topics) {
 
 	Topics.addPostToTopic = async function (tid, postData) {
 		const mainPid = await Topics.getTopicField(tid, 'mainPid');
-		if (!parseInt(mainPid, 10)) {
+		if (!mainPid) {
 			await Topics.setTopicField(tid, 'mainPid', postData.pid);
 		} else {
 			const upvotes = parseInt(postData.upvotes, 10) || 0;
@@ -193,7 +281,7 @@ module.exports = function (Topics) {
 			Topics.getTopicField(tid, 'mainPid'),
 			db.getSortedSetRange(`tid:${tid}:posts`, 0, -1),
 		]);
-		if (parseInt(mainPid, 10)) {
+		if (mainPid) {
 			pids = [mainPid].concat(pids);
 		}
 		return pids;
@@ -207,13 +295,23 @@ module.exports = function (Topics) {
 		incrementFieldAndUpdateSortedSet(tid, 'postcount', -1, 'topics:posts');
 	};
 
-	Topics.increaseViewCount = async function (tid) {
-		incrementFieldAndUpdateSortedSet(tid, 'viewcount', 1, 'topics:views');
+	Topics.increaseViewCount = async function (req, tid) {
+		const allow = req.uid > 0 || (meta.config.guestsIncrementTopicViews && req.uid === 0);
+		if (allow) {
+			req.session.tids_viewed = req.session.tids_viewed || {};
+			const now = Date.now();
+			const interval = meta.config.incrementTopicViewsInterval * 60000;
+			if (!req.session.tids_viewed[tid] || req.session.tids_viewed[tid] < now - interval) {
+				const cid = await Topics.getTopicField(tid, 'cid');
+				incrementFieldAndUpdateSortedSet(tid, 'viewcount', 1, ['topics:views', `cid:${cid}:tids:views`]);
+				req.session.tids_viewed[tid] = now;
+			}
+		}
 	};
 
 	async function incrementFieldAndUpdateSortedSet(tid, field, by, set) {
 		const value = await db.incrObjectFieldBy(`topic:${tid}`, field, by);
-		await db.sortedSetAdd(set, value, tid);
+		await db[Array.isArray(set) ? 'sortedSetsAdd' : 'sortedSetAdd'](set, value, tid);
 	}
 
 	Topics.getTitleByPid = async function (pid) {
@@ -234,9 +332,13 @@ module.exports = function (Topics) {
 		return await db.getObjectField(`topic:${tid}`, 'postcount');
 	};
 
-	async function getPostReplies(pids, callerUid) {
+	async function getPostReplies(postData, callerUid) {
+		const pids = postData.map(p => p && p.pid);
 		const keys = pids.map(pid => `pid:${pid}:replies`);
-		const arrayOfReplyPids = await db.getSortedSetsMembers(keys);
+		const [arrayOfReplyPids, userSettings] = await Promise.all([
+			db.getSortedSetsMembers(keys),
+			user.getSettings(callerUid),
+		]);
 
 		const uniquePids = _.uniq(_.flatten(arrayOfReplyPids));
 
@@ -255,19 +357,22 @@ module.exports = function (Topics) {
 
 		const uidMap = _.zipObject(uniqueUids, userData);
 		const pidMap = _.zipObject(replyData.map(r => r.pid), replyData);
+		const postDataMap = _.zipObject(pids, postData);
 
-		const returnData = arrayOfReplyPids.map((replyPids) => {
+		const returnData = await Promise.all(arrayOfReplyPids.map(async (replyPids, idx) => {
+			const currentPost = postData[idx];
 			replyPids = replyPids.filter(pid => pidMap[pid]);
 			const uidsUsed = {};
 			const currentData = {
 				hasMore: false,
+				hasSingleImmediateReply: false,
 				users: [],
-				text: replyPids.length > 1 ? `[[topic:replies_to_this_post, ${replyPids.length}]]` : '[[topic:one_reply_to_this_post]]',
+				text: replyPids.length > 1 ? `[[topic:replies-to-this-post, ${replyPids.length}]]` : '[[topic:one-reply-to-this-post]]',
 				count: replyPids.length,
 				timestampISO: replyPids.length ? utils.toISOString(pidMap[replyPids[0]].timestamp) : undefined,
 			};
 
-			replyPids.sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+			replyPids.sort((a, b) => pidMap[a].timestamp - pidMap[b].timestamp);
 
 			replyPids.forEach((replyPid) => {
 				const replyData = pidMap[replyPid];
@@ -282,9 +387,66 @@ module.exports = function (Topics) {
 				currentData.hasMore = true;
 			}
 
+			if (replyPids.length === 1) {
+				const currentIndex = currentPost ? currentPost.index : null;
+				const replyPid = replyPids[0];
+				// only load index of nested reply if we can't find it in the postDataMap
+				let replyPost = postDataMap[replyPid];
+				if (!replyPost) {
+					const tid = await posts.getPostField(replyPid, 'tid');
+					replyPost = {
+						index: await posts.getPidIndex(replyPid, tid, userSettings.topicPostSort),
+						tid: tid,
+					};
+				}
+				currentData.hasSingleImmediateReply =
+					(currentPost && currentPost.tid === replyPost.tid) &&
+					Math.abs(currentIndex - replyPost.index) === 1;
+			}
+
 			return currentData;
-		});
+		}));
 
 		return returnData;
 	}
+
+	Topics.syncBacklinks = async (postData) => {
+		if (!postData) {
+			throw new Error('[[error:invalid-data]]');
+		}
+
+
+		let { content } = postData;
+		// ignore lines that start with `>`
+		content = content.split('\n').filter(line => !line.trim().startsWith('>')).join('\n');
+		// Scan post content for topic links
+		const matches = [...content.matchAll(backlinkRegex)];
+		if (!matches) {
+			return 0;
+		}
+
+		const { pid, uid, tid } = postData;
+		let add = _.uniq(matches.map(match => match[1]).map(tid => parseInt(tid, 10)));
+
+		const now = Date.now();
+		const topicsExist = await Topics.exists(add);
+		const current = (await db.getSortedSetMembers(`pid:${pid}:backlinks`)).map(tid => parseInt(tid, 10));
+		const remove = current.filter(tid => !add.includes(tid));
+		add = add.filter((_tid, idx) => topicsExist[idx] && !current.includes(_tid) && tid !== _tid);
+
+		// Remove old backlinks
+		await db.sortedSetRemove(`pid:${pid}:backlinks`, remove);
+
+		// Add new backlinks
+		await db.sortedSetAdd(`pid:${pid}:backlinks`, add.map(() => now), add);
+		await Promise.all(add.map(async (tid) => {
+			await Topics.events.log(tid, {
+				uid,
+				type: 'backlink',
+				href: `/post/${encodeURIComponent(pid)}`,
+			});
+		}));
+
+		return add.length + (current - remove);
+	};
 };

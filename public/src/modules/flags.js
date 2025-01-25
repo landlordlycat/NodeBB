@@ -1,14 +1,16 @@
 'use strict';
 
 
-define('flags', ['hooks', 'components', 'api'], function (hooks, components, api) {
-	var Flag = {};
-	var flagModal;
-	var flagCommit;
-	var flagReason;
+define('flags', ['hooks', 'components', 'api', 'alerts'], function (hooks, components, api, alerts) {
+	const Flag = {};
+	let flagModal;
+	let flagCommit;
+	let flagReason;
 
 	Flag.showFlagModal = function (data) {
-		app.parseAndTranslate('partials/modals/flag_modal', data, function (html) {
+		data.remote = URL.canParse(data.id) ? new URL(data.id).hostname : false;
+
+		app.parseAndTranslate('modals/flag', data, function (html) {
 			flagModal = html;
 			flagModal.on('hidden.bs.modal', function () {
 				flagModal.remove();
@@ -30,23 +32,26 @@ define('flags', ['hooks', 'components', 'api'], function (hooks, components, api
 			});
 
 			flagCommit.on('click', function () {
-				var selected = $('input[name="flag-reason"]:checked');
-				var reason = selected.val();
+				const selected = $('input[name="flag-reason"]:checked');
+				let reason = selected.val();
 				if (selected.attr('id') === 'flag-reason-other') {
 					reason = flagReason.val();
 				}
-				createFlag(data.type, data.id, reason);
+				const notifyRemote = $('input[name="flag-notify-remote"]').is(':checked');
+				createFlag(data.type, data.id, reason, notifyRemote);
 			});
 
 			flagModal.on('click', '#flag-reason-other', function () {
 				flagReason.focus();
 			});
 
+
 			flagModal.modal('show');
 			hooks.fire('action:flag.showModal', {
 				modalEl: flagModal,
 				type: data.type,
 				id: data.id,
+				remote: data.remote,
 			});
 
 			flagModal.find('#flag-reason-custom').on('keyup blur change', checkFlagButtonEnable);
@@ -57,25 +62,40 @@ define('flags', ['hooks', 'components', 'api'], function (hooks, components, api
 		api.put(`/flags/${flagId}`, {
 			state: 'resolved',
 		}).then(() => {
-			app.alertSuccess('[[flags:resolved]]');
+			alerts.success('[[flags:resolved]]');
 			hooks.fire('action:flag.resolved', { flagId: flagId });
-		}).catch(app.alertError);
+		}).catch(alerts.error);
 	};
 
-	function createFlag(type, id, reason) {
+
+	Flag.rescind = function (flagId) {
+		api.del(`/flags/${flagId}/report`).then(() => {
+			alerts.success('[[flags:report-rescinded]]');
+			hooks.fire('action:flag.rescinded', { flagId: flagId });
+		}).catch(alerts.error);
+	};
+
+	Flag.purge = function (flagId) {
+		api.del(`/flags/${flagId}`).then(() => {
+			alerts.success('[[flags:purged]]');
+			hooks.fire('action:flag.purged', { flagId: flagId });
+		}).catch(alerts.error);
+	};
+
+	function createFlag(type, id, reason, notifyRemote = false) {
 		if (!type || !id || !reason) {
 			return;
 		}
-		var data = { type: type, id: id, reason: reason };
+		const data = { type: type, id: id, reason: reason, notifyRemote: notifyRemote };
 		api.post('/flags', data, function (err, flagId) {
 			if (err) {
-				return app.alertError(err.message);
+				return alerts.error(err);
 			}
 
 			flagModal.modal('hide');
-			app.alertSuccess('[[flags:modal-submit-success]]');
+			alerts.success('[[flags:modal-submit-success]]');
 			if (type === 'post') {
-				var postEl = components.get('post', 'pid', id);
+				const postEl = components.get('post', 'pid', id);
 				postEl.find('[component="post/flag"]').addClass('hidden').parent().attr('hidden', '');
 				postEl.find('[component="post/already-flagged"]').removeClass('hidden').parent().attr('hidden', null);
 			}
