@@ -1,29 +1,17 @@
 'use strict';
 
-
-const	async = require('async');
 const assert = require('assert');
 const db = require('../mocks/databasemock');
 
 describe('Sorted Set methods', () => {
-	before((done) => {
-		async.parallel([
-			function (next) {
-				db.sortedSetAdd('sortedSetTest1', [1.1, 1.2, 1.3], ['value1', 'value2', 'value3'], next);
-			},
-			function (next) {
-				db.sortedSetAdd('sortedSetTest2', [1, 4], ['value1', 'value4'], next);
-			},
-			function (next) {
-				db.sortedSetAdd('sortedSetTest3', [2, 4], ['value2', 'value4'], next);
-			},
-			function (next) {
-				db.sortedSetAdd('sortedSetTest4', [1, 1, 2, 3, 5], ['b', 'a', 'd', 'e', 'c'], next);
-			},
-			function (next) {
-				db.sortedSetAdd('sortedSetLex', [0, 0, 0, 0], ['a', 'b', 'c', 'd'], next);
-			},
-		], done);
+	before(async () => {
+		await Promise.all([
+			db.sortedSetAdd('sortedSetTest1', [1.1, 1.2, 1.3], ['value1', 'value2', 'value3']),
+			db.sortedSetAdd('sortedSetTest2', [1, 4], ['value1', 'value4']),
+			db.sortedSetAdd('sortedSetTest3', [2, 4], ['value2', 'value4']),
+			db.sortedSetAdd('sortedSetTest4', [1, 1, 2, 3, 5], ['b', 'a', 'd', 'e', 'c']),
+			db.sortedSetAdd('sortedSetLex', [0, 0, 0, 0], ['a', 'b', 'c', 'd']),
+		]);
 	});
 
 	describe('sortedSetScan', () => {
@@ -64,6 +52,7 @@ describe('Sorted Set methods', () => {
 				match: '*b{',
 				limit: 2,
 			});
+			assert.strictEqual(data.length, 2);
 			assert(data.includes('aaab{'));
 			assert(data.includes('bbcb{'));
 		});
@@ -73,8 +62,8 @@ describe('Sorted Set methods', () => {
 			const data = await db.getSortedSetScan({
 				key: 'scanzset4',
 				match: 'b*',
-				limit: 2,
 			});
+			assert.strictEqual(data.length, 2);
 			assert(data.includes('bbbb'));
 			assert(data.includes('bbcb'));
 		});
@@ -85,7 +74,7 @@ describe('Sorted Set methods', () => {
 				key: 'scanzset5',
 				match: '*db',
 			});
-			assert.equal(data.length, 2);
+			assert.strictEqual(data.length, 2);
 			assert(data.includes('ddb'));
 			assert(data.includes('adb'));
 		});
@@ -452,6 +441,12 @@ describe('Sorted Set methods', () => {
 				});
 			});
 		});
+
+		it('should return elements if min/max are numeric strings', async () => {
+			await db.sortedSetAdd('zsetstringminmax', [1, 2, 3, 4, 5], ['value1', 'value2', 'value3', 'value4', 'value5']);
+			const results = await db.getSortedSetRevRangeByScore('zsetstringminmax', 0, -1, '3', '3');
+			assert.deepStrictEqual(results, ['value3']);
+		});
 	});
 
 	describe('getSortedSetRevRangeByScore()', () => {
@@ -609,6 +604,23 @@ describe('Sorted Set methods', () => {
 				assert.equal(sum, 3);
 				done();
 			});
+		});
+
+		it('should work with min/max', async () => {
+			let count = await db.sortedSetsCardSum([
+				'sortedSetTest1', 'sortedSetTest2', 'sortedSetTest3',
+			], '-inf', 2);
+			assert.strictEqual(count, 5);
+
+			count = await db.sortedSetsCardSum([
+				'sortedSetTest1', 'sortedSetTest2', 'sortedSetTest3',
+			], 2, '+inf');
+			assert.strictEqual(count, 3);
+
+			count = await db.sortedSetsCardSum([
+				'sortedSetTest1', 'sortedSetTest2', 'sortedSetTest3',
+			], '-inf', '+inf');
+			assert.strictEqual(count, 7);
 		});
 	});
 
@@ -955,6 +967,28 @@ describe('Sorted Set methods', () => {
 				done();
 			});
 		});
+
+		it('should return members of sorted set with scores', async () => {
+			await db.sortedSetAdd('getSortedSetsMembersWithScores', [1, 2, 3], ['v1', 'v2', 'v3']);
+			const d = await db.getSortedSetMembersWithScores('getSortedSetsMembersWithScores');
+			assert.deepEqual(d, [
+				{ value: 'v1', score: 1 },
+				{ value: 'v2', score: 2 },
+				{ value: 'v3', score: 3 },
+			]);
+		});
+
+		it('should return members of multiple sorted sets with scores', async () => {
+			const d = await db.getSortedSetsMembersWithScores(
+				['doesnotexist', 'getSortedSetsMembersWithScores']
+			);
+			assert.deepEqual(d[0], []);
+			assert.deepEqual(d[1], [
+				{ value: 'v1', score: 1 },
+				{ value: 'v2', score: 2 },
+				{ value: 'v3', score: 3 },
+			]);
+		});
 	});
 
 	describe('sortedSetUnionCard', () => {
@@ -996,6 +1030,11 @@ describe('Sorted Set methods', () => {
 				done();
 			});
 		});
+
+		it('should return empty array if sets is empty', async () => {
+			const result = await db.getSortedSetRevUnion({ sets: [], start: 0, stop: -1 });
+			assert.deepStrictEqual(result, []);
+		});
 	});
 
 	describe('sortedSetIncrBy()', () => {
@@ -1024,6 +1063,47 @@ describe('Sorted Set methods', () => {
 				});
 			});
 		});
+
+		it('should increment fields of sorted sets with a single call', async () => {
+			const data = await db.sortedSetIncrByBulk([
+				['sortedIncrBulk1', 1, 'value1'],
+				['sortedIncrBulk2', 2, 'value2'],
+				['sortedIncrBulk3', 3, 'value3'],
+				['sortedIncrBulk3', 4, 'value4'],
+			]);
+			assert.deepStrictEqual(data, [1, 2, 3, 4]);
+			assert.deepStrictEqual(
+				await db.getSortedSetRangeWithScores('sortedIncrBulk1', 0, -1),
+				[{ value: 'value1', score: 1 }],
+			);
+			assert.deepStrictEqual(
+				await db.getSortedSetRangeWithScores('sortedIncrBulk2', 0, -1),
+				[{ value: 'value2', score: 2 }],
+			);
+			assert.deepStrictEqual(
+				await db.getSortedSetRangeWithScores('sortedIncrBulk3', 0, -1),
+				[
+					{ value: 'value3', score: 3 },
+					{ value: 'value4', score: 4 },
+				],
+			);
+		});
+
+		it('should increment the same field', async () => {
+			const data1 = await db.sortedSetIncrByBulk([
+				['sortedIncrBulk5', 5, 'value5'],
+			]);
+
+			const data2 = await db.sortedSetIncrByBulk([
+				['sortedIncrBulk5', 5, 'value5'],
+			]);
+			assert.deepStrictEqual(
+				await db.getSortedSetRangeWithScores('sortedIncrBulk5', 0, -1),
+				[
+					{ value: 'value5', score: 10 },
+				],
+			);
+		});
 	});
 
 
@@ -1042,6 +1122,11 @@ describe('Sorted Set methods', () => {
 					done();
 				});
 			});
+		});
+
+		it('should not think the sorted set exists if the last element is removed', async () => {
+			await db.sortedSetRemove('sorted3', 'value1');
+			assert.strictEqual(await db.exists('sorted3'), false);
 		});
 
 		it('should remove multiple values from multiple keys', (done) => {
@@ -1119,14 +1204,37 @@ describe('Sorted Set methods', () => {
 			const members = await db.getSortedSetsMembers(['bulkRemove1', 'bulkRemove2']);
 			assert.deepStrictEqual(members, [[], []]);
 		});
+
+		it('should not remove wrong elements in bulk remove', async () => {
+			await db.sortedSetAddBulk([
+				['bulkRemove4', 1, 'value1'],
+				['bulkRemove4', 2, 'value2'],
+				['bulkRemove4', 3, 'value4'],
+				['bulkRemove5', 1, 'value1'],
+				['bulkRemove5', 2, 'value2'],
+				['bulkRemove5', 3, 'value3'],
+			]);
+			await db.sortedSetRemoveBulk([
+				['bulkRemove4', 'value1'],
+				['bulkRemove4', 'value3'],
+				['bulkRemove5', 'value1'],
+				['bulkRemove5', 'value4'],
+			]);
+			const members = await Promise.all([
+				db.getSortedSetRange('bulkRemove4', 0, -1),
+				db.getSortedSetRange('bulkRemove5', 0, -1),
+			]);
+			assert.deepStrictEqual(members[0], ['value2', 'value4']);
+			assert.deepStrictEqual(members[1], ['value2', 'value3']);
+		});
 	});
 
 	describe('sortedSetsRemove()', () => {
-		before((done) => {
-			async.parallel([
-				async.apply(db.sortedSetAdd, 'sorted4', [1, 2], ['value1', 'value2']),
-				async.apply(db.sortedSetAdd, 'sorted5', [1, 2], ['value1', 'value3']),
-			], done);
+		before(async () => {
+			await Promise.all([
+				db.sortedSetAdd('sorted4', [1, 2], ['value1', 'value2']),
+				db.sortedSetAdd('sorted5', [1, 2], ['value1', 'value3']),
+			]);
 		});
 
 		it('should remove element from multiple sorted sets', (done) => {
@@ -1175,15 +1283,11 @@ describe('Sorted Set methods', () => {
 	});
 
 	describe('getSortedSetIntersect', () => {
-		before((done) => {
-			async.parallel([
-				function (next) {
-					db.sortedSetAdd('interSet1', [1, 2, 3], ['value1', 'value2', 'value3'], next);
-				},
-				function (next) {
-					db.sortedSetAdd('interSet2', [4, 5, 6], ['value2', 'value3', 'value5'], next);
-				},
-			], done);
+		before(async () => {
+			await Promise.all([
+				db.sortedSetAdd('interSet1', [1, 2, 3], ['value1', 'value2', 'value3']),
+				db.sortedSetAdd('interSet2', [4, 5, 6], ['value2', 'value3', 'value5']),
+			]);
 		});
 
 		it('should return the intersection of two sets', (done) => {
@@ -1343,21 +1447,13 @@ describe('Sorted Set methods', () => {
 	});
 
 	describe('sortedSetIntersectCard', () => {
-		before((done) => {
-			async.parallel([
-				function (next) {
-					db.sortedSetAdd('interCard1', [0, 0, 0], ['value1', 'value2', 'value3'], next);
-				},
-				function (next) {
-					db.sortedSetAdd('interCard2', [0, 0, 0], ['value2', 'value3', 'value4'], next);
-				},
-				function (next) {
-					db.sortedSetAdd('interCard3', [0, 0, 0], ['value3', 'value4', 'value5'], next);
-				},
-				function (next) {
-					db.sortedSetAdd('interCard4', [0, 0, 0], ['value4', 'value5', 'value6'], next);
-				},
-			], done);
+		before(async () => {
+			await Promise.all([
+				db.sortedSetAdd('interCard1', [0, 0, 0], ['value1', 'value2', 'value3']),
+				db.sortedSetAdd('interCard2', [0, 0, 0], ['value2', 'value3', 'value4']),
+				db.sortedSetAdd('interCard3', [0, 0, 0], ['value3', 'value4', 'value5']),
+				db.sortedSetAdd('interCard4', [0, 0, 0], ['value4', 'value5', 'value6']),
+			]);
 		});
 
 		it('should return # of elements in intersection', (done) => {
@@ -1422,7 +1518,7 @@ describe('Sorted Set methods', () => {
 			await db.sortedSetAdd('sortedSetLexSearch', [0, 0, 0], ['baris:usakli:1', 'baris usakli:2', 'baris soner:3']);
 			const query = 'baris:';
 			const min = query;
-			const max = query.substr(0, query.length - 1) + String.fromCharCode(query.charCodeAt(query.length - 1) + 1);
+			const max = query.slice(0, -1) + String.fromCharCode(query.charCodeAt(query.length - 1) + 1);
 			const result = await db.getSortedSetRangeByLex('sortedSetLexSearch', min, max, 0, -1);
 			assert.deepStrictEqual(result, ['baris:usakli:1']);
 		});

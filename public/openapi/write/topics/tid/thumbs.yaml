@@ -11,6 +11,13 @@ get:
       required: true
       description: a valid topic id
       example: 1
+    - in: query
+      name: thumbsOnly
+      schema:
+        type: boolean
+      required: false
+      description: "(default: false) exclude post attachments, uploaded media, and those added by plugins"
+      example: 0
   responses:
     '200':
       description: Thumbnails successfully retrieved
@@ -30,6 +37,8 @@ get:
                     id:
                       type: string
                     name:
+                      type: string
+                    path:
                       type: string
                     url:
                       type: string
@@ -109,8 +118,20 @@ put:
               status:
                 $ref: ../../../components/schemas/Status.yaml#/Status
               response:
-                type: object
-                properties: {}
+                type: array
+                description: A list of the topic thumbnails in the destination topic
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    name:
+                      type: string
+                    path:
+                      type: string
+                    url:
+                      type: string
+                      description: Path to a topic thumbnail
 delete:
   tags:
     - topics
@@ -154,6 +175,8 @@ delete:
                     id:
                       type: string
                     name:
+                      type: string
+                    path:
                       type: string
                     url:
                       type: string

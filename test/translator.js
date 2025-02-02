@@ -1,8 +1,9 @@
 'use strict';
 
+// For tests relating to Transifex configuration, check i18n.js
 
 const assert = require('assert');
-const shim = require('../public/src/modules/translator');
+const shim = require('../src/translator');
 
 const { Translator } = shim;
 const db = require('./mocks/databasemock');
@@ -10,7 +11,7 @@ const db = require('./mocks/databasemock');
 describe('Translator shim', () => {
 	describe('.translate()', () => {
 		it('should translate correctly', (done) => {
-			shim.translate('[[global:pagination.out_of, (foobar), [[global:home]]]]', (translated) => {
+			shim.translate('[[global:pagination.out-of, (foobar), [[global:home]]]]', (translated) => {
 				assert.strictEqual(translated, '(foobar) out of Home');
 				done();
 			});
@@ -33,6 +34,41 @@ describe('Translator shim', () => {
 		it('should translate empty string properly', async () => {
 			const translated = await shim.translate('', 'en-GB');
 			assert.strictEqual(translated, '');
+		});
+
+		it('should not allow path traversal', async () => {
+			const t = await shim.translate('[[../../../../config:secret]]');
+			assert.strictEqual(t, 'secret');
+		});
+	});
+
+	describe('translateKeys', () => {
+		it('should translate each key in array', async () => {
+			const translated = await shim.translateKeys(['[[global:home]]', '[[global:search]]'], 'en-GB');
+			assert.deepStrictEqual(translated, ['Home', 'Search']);
+		});
+
+		it('should translate each key in array using a callback', (done) => {
+			shim.translateKeys(['[[global:save]]', '[[global:close]]'], 'en-GB', (translated) => {
+				assert.deepStrictEqual(translated, ['Save', 'Close']);
+				done();
+			});
+		});
+	});
+
+	it('should load translations for language', (done) => {
+		shim.load('en-GB', 'global', (translations) => {
+			assert(translations);
+			assert(translations['header.profile']);
+			done();
+		});
+	});
+
+	it('should get translations for language', (done) => {
+		shim.getTranslations('en-GB', 'global', (translations) => {
+			assert(translations);
+			assert(translations['header.profile']);
+			done();
 		});
 	});
 });
@@ -73,7 +109,7 @@ describe('new Translator(language)', () => {
 		it('should handle language keys with parameters', () => {
 			const translator = Translator.create('en-GB');
 
-			return translator.translate('[[global:pagination.out_of, 1, 5]]').then((translated) => {
+			return translator.translate('[[global:pagination.out-of, 1, 5]]').then((translated) => {
 				assert.strictEqual(translated, '1 out of 5');
 			});
 		});
@@ -81,7 +117,7 @@ describe('new Translator(language)', () => {
 		it('should handle language keys inside language keys', () => {
 			const translator = Translator.create('en-GB');
 
-			return translator.translate('[[notifications:outgoing_link_message, [[global:guest]]]]').then((translated) => {
+			return translator.translate('[[notifications:outgoing-link-message, [[global:guest]]]]').then((translated) => {
 				assert.strictEqual(translated, 'You are now leaving Guest');
 			});
 		});
@@ -89,7 +125,7 @@ describe('new Translator(language)', () => {
 		it('should handle language keys inside language keys with multiple parameters', () => {
 			const translator = Translator.create('en-GB');
 
-			return translator.translate('[[notifications:user_posted_to, [[global:guest]], My Topic]]').then((translated) => {
+			return translator.translate('[[notifications:user-posted-to, [[global:guest]], My Topic]]').then((translated) => {
 				assert.strictEqual(translated, '<strong>Guest</strong> has posted a reply to: <strong>My Topic</strong>');
 			});
 		});
@@ -97,7 +133,7 @@ describe('new Translator(language)', () => {
 		it('should handle language keys inside language keys with all parameters as language keys', () => {
 			const translator = Translator.create('en-GB');
 
-			return translator.translate('[[notifications:user_posted_to, [[global:guest]], [[global:guest]]]]').then((translated) => {
+			return translator.translate('[[notifications:user-posted-to, [[global:guest]], [[global:guest]]]]').then((translated) => {
 				assert.strictEqual(translated, '<strong>Guest</strong> has posted a reply to: <strong>Guest</strong>');
 			});
 		});
@@ -105,7 +141,7 @@ describe('new Translator(language)', () => {
 		it('should properly handle parameters that contain square brackets', () => {
 			const translator = Translator.create('en-GB');
 
-			return translator.translate('[[global:pagination.out_of, [guest], [[global:home]]]]').then((translated) => {
+			return translator.translate('[[global:pagination.out-of, [guest], [[global:home]]]]').then((translated) => {
 				assert.strictEqual(translated, '[guest] out of Home');
 			});
 		});
@@ -113,7 +149,7 @@ describe('new Translator(language)', () => {
 		it('should properly handle parameters that contain parentheses', () => {
 			const translator = Translator.create('en-GB');
 
-			return translator.translate('[[global:pagination.out_of, (foobar), [[global:home]]]]').then((translated) => {
+			return translator.translate('[[global:pagination.out-of, (foobar), [[global:home]]]]').then((translated) => {
 				assert.strictEqual(translated, '(foobar) out of Home');
 			});
 		});
@@ -123,7 +159,7 @@ describe('new Translator(language)', () => {
 
 			const key = '[[global:403.login, <strong>test</strong>]]';
 			return translator.translate(key).then((translated) => {
-				assert.strictEqual(translated, 'Perhaps you should <a href=\'&lt;strong&gt;test&lt;/strong&gt;/login\'>try logging in</a>?');
+				assert.strictEqual(translated, 'Perhaps you should <a class="alert-link" href=\'&lt;strong&gt;test&lt;/strong&gt;/login\'>try logging in</a>?');
 			});
 		});
 
@@ -140,7 +176,7 @@ describe('new Translator(language)', () => {
 			// https://github.com/NodeBB/NodeBB/issues/9206
 			const translator = Translator.create('en-GB');
 
-			const key = '[[notifications:upvoted_your_post_in, test1, error: Error: &lsqb;&lsqb;error:group-name-too-long&rsqb;&rsqb; on NodeBB Upgrade]]';
+			const key = '[[notifications:upvoted-your-post-in, test1, error: Error: &lsqb;&lsqb;error:group-name-too-long&rsqb;&rsqb; on NodeBB Upgrade]]';
 			return translator.translate(key).then((translated) => {
 				assert.strictEqual(translated, '<strong>test1</strong> has upvoted your post in <strong>error: Error: &lsqb;&lsqb;error:group-name-too-long&rsqb;&rsqb; on NodeBB Upgrade</strong>.');
 			});
@@ -150,7 +186,7 @@ describe('new Translator(language)', () => {
 			const translator = Translator.create('en-GB');
 
 			const title = 'Test 1\\, 2\\, 3 %2 salmon';
-			const key = `[[topic:composer.replying_to, ${title}]]`;
+			const key = `[[topic:composer.replying-to, ${title}]]`;
 			return translator.translate(key).then((translated) => {
 				assert.strictEqual(translated, 'Replying to Test 1&#44; 2&#44; 3 &#37;2 salmon');
 			});
@@ -160,7 +196,7 @@ describe('new Translator(language)', () => {
 			const translator = Translator.create('en-GB');
 
 			const title = '3 % salmon';
-			const key = `[[topic:composer.replying_to, ${title}]]`;
+			const key = `[[topic:composer.replying-to, ${title}]]`;
 			return translator.translate(key).then((translated) => {
 				assert.strictEqual(translated, 'Replying to 3 % salmon');
 			});
@@ -302,10 +338,6 @@ describe('Translator static methods', () => {
 
 	describe('.unescape', () => {
 		it('should unescape escaped translation patterns within text', (done) => {
-			assert.strictEqual(
-				Translator.unescape('some nice text \\[\\[global:home\\]\\] here'),
-				'some nice text [[global:home]] here'
-			);
 			assert.strictEqual(
 				Translator.unescape('some nice text &lsqb;&lsqb;global:home&rsqb;&rsqb; here'),
 				'some nice text [[global:home]] here'

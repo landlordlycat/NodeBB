@@ -1,7 +1,7 @@
 'use strict';
 
-define('admin/manage/uploads', ['api', 'bootbox', 'uploader'], function (api, bootbox, uploader) {
-	var Uploads = {};
+define('admin/manage/uploads', ['api', 'bootbox', 'alerts', 'uploader'], function (api, bootbox, alerts, uploader) {
+	const Uploads = {};
 
 	Uploads.init = function () {
 		$('#upload').on('click', function () {
@@ -15,7 +15,7 @@ define('admin/manage/uploads', ['api', 'bootbox', 'uploader'], function (api, bo
 		});
 
 		$('.delete').on('click', function () {
-			var file = $(this).parents('[data-path]');
+			const file = $(this).parents('[data-path]');
 			bootbox.confirm('[[admin/manage/uploads:confirm-delete]]', function (ok) {
 				if (!ok) {
 					return;
@@ -25,7 +25,7 @@ define('admin/manage/uploads', ['api', 'bootbox', 'uploader'], function (api, bo
 					path: file.attr('data-path'),
 				}).then(() => {
 					file.remove();
-				}).catch(app.alertError);
+				}).catch(alerts.error);
 			});
 		});
 
@@ -40,7 +40,7 @@ define('admin/manage/uploads', ['api', 'bootbox', 'uploader'], function (api, bo
 					folderName: newFolderName,
 				}).then(() => {
 					ajaxify.refresh();
-				}).catch(app.alertError);
+				}).catch(alerts.error);
 			});
 		});
 	};

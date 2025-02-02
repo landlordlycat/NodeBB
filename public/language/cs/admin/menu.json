@@ -4,6 +4,7 @@
 	"dashboard/logins": "Logins",
 	"dashboard/users": "Users",
 	"dashboard/topics": "Topics",
+	"dashboard/searches": "Searches",
 	"section-general": "Všeobecné",
 
 	"section-manage": "Spravovat",
@@ -13,6 +14,7 @@
 	"manage/users": "Uživatelé",
 	"manage/admins-mods": "Správci a moderátoři",
 	"manage/registration": "Registrační fronta",
+	"manage/flagged-content": "Flagged Content",
 	"manage/post-queue": "Fronta příspěvků",
 	"manage/groups": "Skupiny",
 	"manage/ip-blacklist": "Černá listina IP",
@@ -36,6 +38,7 @@
 	"settings/tags": "Značky",
 	"settings/notifications": "Oznámení",
 	"settings/api": "API Access",
+	"settings/activitypub": "Federation (ActivityPub)",
 	"settings/sounds": "Sounds",
 	"settings/social": "Social",
 	"settings/cookies": "Cookies",
@@ -71,11 +74,13 @@
 	"development/info": "Informace",
 
 	"rebuild-and-restart-forum": "Znovu sestavit a restartovat fórum",
+	"rebuild-and-restart": "Rebuild & Restart",
 	"restart-forum": "Restartovat fórum",
+	"restart": "Restart",
 	"logout": "Odhlásit",
 	"view-forum": "Zobrazit fórum",
 
-	"search.placeholder": "Press &quot;/&quot; to search for settings",
+	"search.placeholder": "Search settings",
 	"search.no-results": "Žádné výsledky…",
 	"search.search-forum": "Prohledat fórum pro <strong></strong>",
 	"search.keep-typing": "Pište dále pro zobrazení výsledků…",

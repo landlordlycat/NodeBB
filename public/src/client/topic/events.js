@@ -9,12 +9,12 @@ define('forum/topic/events', [
 	'forum/topic/images',
 	'components',
 	'translator',
-	'benchpress',
 	'hooks',
-], function (postTools, threadTools, posts, images, components, translator, Benchpress, hooks) {
-	var Events = {};
+	'helpers',
+], function (postTools, threadTools, posts, images, components, translator, hooks, helpers) {
+	const Events = {};
 
-	var events = {
+	const events = {
 		'event:user_status_change': onUserStatusChange,
 		'event:voted': updatePostVotesAndUserReputation,
 		'event:bookmarked': updateBookmarkCount,
@@ -50,7 +50,7 @@ define('forum/topic/events', [
 
 	Events.init = function () {
 		Events.removeListeners();
-		for (var eventName in events) {
+		for (const eventName in events) {
 			if (events.hasOwnProperty(eventName)) {
 				socket.on(eventName, events[eventName]);
 			}
@@ -58,7 +58,7 @@ define('forum/topic/events', [
 	};
 
 	Events.removeListeners = function () {
-		for (var eventName in events) {
+		for (const eventName in events) {
 			if (events.hasOwnProperty(eventName)) {
 				socket.removeListener(eventName, events[eventName]);
 			}
@@ -70,10 +70,10 @@ define('forum/topic/events', [
 	}
 
 	function updatePostVotesAndUserReputation(data) {
-		var votes = $('[data-pid="' + data.post.pid + '"] [component="post/vote-count"]').filter(function (index, el) {
-			return parseInt($(el).closest('[data-pid]').attr('data-pid'), 10) === parseInt(data.post.pid, 10);
+		const votes = $('[data-pid="' + data.post.pid + '"] [component="post/vote-count"]').filter(function (index, el) {
+			return $(el).closest('[data-pid]').attr('data-pid') === String(data.post.pid);
 		});
-		var reputationElements = $('.reputation[data-uid="' + data.post.uid + '"]');
+		const reputationElements = $('.reputation[data-uid="' + data.post.uid + '"]');
 		votes.html(data.post.votes).attr('data-votes', data.post.votes);
 		reputationElements.html(data.user.reputation).attr('data-reputation', data.user.reputation);
 	}
@@ -101,19 +101,19 @@ define('forum/topic/events', [
 	}
 
 	function onPostEdited(data) {
-		if (!data || !data.post || parseInt(data.post.tid, 10) !== parseInt(ajaxify.data.tid, 10)) {
+		if (!data || !data.post || String(data.post.tid) !== String(ajaxify.data.tid)) {
 			return;
 		}
-		var editedPostEl = components.get('post/content', data.post.pid).filter(function (index, el) {
-			return parseInt($(el).closest('[data-pid]').attr('data-pid'), 10) === parseInt(data.post.pid, 10);
+		const editedPostEl = components.get('post/content', data.post.pid).filter(function (index, el) {
+			return String($(el).closest('[data-pid]').attr('data-pid')) === String(data.post.pid);
 		});
-
-		var editorEl = $('[data-pid="' + data.post.pid + '"] [component="post/editor"]').filter(function (index, el) {
-			return parseInt($(el).closest('[data-pid]').attr('data-pid'), 10) === parseInt(data.post.pid, 10);
+		const postContainer = $(`[data-pid="${data.post.pid}"]`);
+		const editorEl = postContainer.find('[component="post/editor"]').filter(function (index, el) {
+			return String($(el).closest('[data-pid]').attr('data-pid')) === String(data.post.pid);
 		});
-		var topicTitle = components.get('topic/title');
-		var navbarTitle = components.get('navbar/title').find('span');
-		var breadCrumb = components.get('breadcrumb/current');
+		const topicTitle = components.get('topic/title');
+		const navbarTitle = components.get('navbar/title').find('span');
+		const breadCrumb = components.get('breadcrumb/current');
 
 		if (data.topic.rescheduled) {
 			return ajaxify.go('topic/' + data.topic.slug, null, true);
@@ -121,7 +121,7 @@ define('forum/topic/events', [
 
 		if (topicTitle.length && data.topic.title && data.topic.renamed) {
 			ajaxify.data.title = data.topic.title;
-			var newUrl = 'topic/' + data.topic.slug + (window.location.search ? window.location.search : '');
+			const newUrl = 'topic/' + data.topic.slug + (window.location.search ? window.location.search : '');
 			history.replaceState({ url: newUrl }, null, window.location.protocol + '//' + window.location.host + config.relative_path + '/' + newUrl);
 
 			topicTitle.fadeOut(250, function () {
@@ -138,50 +138,38 @@ define('forum/topic/events', [
 		if (data.post.changed) {
 			editedPostEl.fadeOut(250, function () {
 				editedPostEl.html(translator.unescape(data.post.content));
-				editedPostEl.find('img:not(.not-responsive)').addClass('img-responsive');
+				editedPostEl.find('img:not(.not-responsive)').addClass('img-fluid');
 				images.wrapImagesInLinks(editedPostEl.parent());
 				posts.addBlockquoteEllipses(editedPostEl.parent());
 				editedPostEl.fadeIn(250);
 
-				var editData = {
-					editor: data.editor,
-					editedISO: utils.toISOString(data.post.edited),
-				};
+				if (data.post.edited) {
+					const editData = {
+						editor: data.editor,
+						editedISO: utils.toISOString(data.post.edited),
+					};
 
-				app.parseAndTranslate('partials/topic/post-editor', editData, function (html) {
-					editorEl.replaceWith(html);
-					$('[data-pid="' + data.post.pid + '"] [component="post/editor"] .timeago').timeago();
-					hooks.fire('action:posts.edited', data);
-				});
+					app.parseAndTranslate('partials/topic/post-editor', editData, function (html) {
+						editorEl.replaceWith(html);
+						postContainer.find('[component="post/edit-indicator"]')
+							.removeClass('hidden')
+							.translateAttr('title', `[[global:edited-timestamp, ${helpers.isoTimeToLocaleString(editData.editedISO, config.userLang)}]]`);
+						postContainer.find('[component="post/editor"] .timeago').timeago();
+						hooks.fire('action:posts.edited', data);
+					});
+				}
 			});
 		} else {
 			hooks.fire('action:posts.edited', data);
 		}
 
-		if (data.topic.tags && tagsUpdated(data.topic.tags)) {
-			Benchpress.render('partials/topic/tags', { tags: data.topic.tags }).then(function (html) {
-				var tags = $('.tags');
-
-				tags.fadeOut(250, function () {
-					tags.html(html).fadeIn(250);
-				});
+		if (data.topic.tags && data.topic.tagsupdated) {
+			require(['forum/topic/tag'], function (tag) {
+				tag.updateTopicTags([data.topic]);
 			});
 		}
 
 		postTools.removeMenu(components.get('post', 'pid', data.post.pid));
-	}
-
-	function tagsUpdated(tags) {
-		if (tags.length !== $('.tags').first().children().length) {
-			return true;
-		}
-
-		for (var i = 0; i < tags.length; i += 1) {
-			if (!$('.tags .tag-item[data-tag="' + tags[i].value + '"]').length) {
-				return true;
-			}
-		}
-		return false;
 	}
 
 	function onPostPurged(postData) {
@@ -200,20 +188,20 @@ define('forum/topic/events', [
 	}
 
 	function togglePostDeleteState(data) {
-		var postEl = components.get('post', 'pid', data.pid);
+		const postEl = components.get('post', 'pid', data.pid);
 
 		if (!postEl.length) {
 			return;
 		}
 
 		postEl.toggleClass('deleted');
-		var isDeleted = postEl.hasClass('deleted');
+		const isDeleted = postEl.hasClass('deleted');
 		postTools.toggle(data.pid, isDeleted);
 
 		if (!ajaxify.data.privileges.isAdminOrMod && parseInt(data.uid, 10) !== parseInt(app.user.uid, 10)) {
 			postEl.find('[component="post/tools"]').toggleClass('hidden', isDeleted);
 			if (isDeleted) {
-				postEl.find('[component="post/content"]').translateHtml('[[topic:post_is_deleted]]');
+				postEl.find('[component="post/content"]').translateHtml('[[topic:post-is-deleted]]');
 			} else {
 				postEl.find('[component="post/content"]').html(translator.unescape(data.content));
 			}
@@ -221,7 +209,7 @@ define('forum/topic/events', [
 	}
 
 	function togglePostBookmark(data) {
-		var el = $('[data-pid="' + data.post.pid + '"] [component="post/bookmark"]').filter(function (index, el) {
+		const el = $('[data-pid="' + data.post.pid + '"] [component="post/bookmark"]').filter(function (index, el) {
 			return parseInt($(el).closest('[data-pid]').attr('data-pid'), 10) === parseInt(data.post.pid, 10);
 		});
 		if (!el.length) {
@@ -235,17 +223,17 @@ define('forum/topic/events', [
 	}
 
 	function togglePostVote(data) {
-		var post = $('[data-pid="' + data.post.pid + '"]');
+		const post = $('[data-pid="' + data.post.pid + '"]');
 		post.find('[component="post/upvote"]').filter(function (index, el) {
-			return parseInt($(el).closest('[data-pid]').attr('data-pid'), 10) === parseInt(data.post.pid, 10);
+			return $(el).closest('[data-pid]').attr('data-pid') === String(data.post.pid);
 		}).toggleClass('upvoted', data.upvote);
 		post.find('[component="post/downvote"]').filter(function (index, el) {
-			return parseInt($(el).closest('[data-pid]').attr('data-pid'), 10) === parseInt(data.post.pid, 10);
+			return $(el).closest('[data-pid]').attr('data-pid') === String(data.post.pid);
 		}).toggleClass('downvoted', data.downvote);
 	}
 
 	function onNewNotification(data) {
-		var tid = ajaxify.data.tid;
+		const tid = ajaxify.data.tid;
 		if (data && data.tid && parseInt(data.tid, 10) === parseInt(tid, 10)) {
 			socket.emit('topics.markTopicNotificationsRead', [tid]);
 		}

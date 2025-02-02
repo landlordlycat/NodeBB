@@ -2,7 +2,6 @@
 'use strict';
 
 const _ = require('lodash');
-const async = require('async');
 const validator = require('validator');
 const winston = require('winston');
 
@@ -12,12 +11,15 @@ const meta = require('../meta');
 const db = require('../database');
 const groups = require('../groups');
 const plugins = require('../plugins');
+const api = require('../api');
+const tx = require('../translator');
 
 module.exports = function (User) {
 	User.updateProfile = async function (uid, data, extraFields) {
 		let fields = [
-			'username', 'email', 'fullname', 'website', 'location',
+			'username', 'email', 'fullname',
 			'groupTitle', 'birthday', 'signature', 'aboutme',
+			...await db.getSortedSetRange('user-custom-fields', 0, -1),
 		];
 		if (Array.isArray(extraFields)) {
 			fields = _.uniq(fields.concat(extraFields));
@@ -38,8 +40,8 @@ module.exports = function (User) {
 		await validateData(uid, data);
 
 		const oldData = await User.getUserFields(updateUid, fields);
-
-		await async.each(fields, async (field) => {
+		const updateData = {};
+		await Promise.all(fields.map(async (field) => {
 			if (!(data[field] !== undefined && typeof data[field] === 'string')) {
 				return;
 			}
@@ -49,13 +51,16 @@ module.exports = function (User) {
 			if (field === 'email') {
 				return await updateEmail(updateUid, data.email);
 			} else if (field === 'username') {
-				return await updateUsername(updateUid, data.username);
+				return await updateUsername(updateUid, data.username, uid);
 			} else if (field === 'fullname') {
 				return await updateFullname(updateUid, data.fullname);
 			}
+			updateData[field] = data[field];
+		}));
 
-			await User.setUserField(updateUid, field, data[field]);
-		});
+		if (Object.keys(updateData).length) {
+			await User.setUserFields(updateUid, updateData);
+		}
 
 		plugins.hooks.fire('action:user.updateProfile', {
 			uid: uid,
@@ -63,6 +68,7 @@ module.exports = function (User) {
 			fields: fields,
 			oldData: oldData,
 		});
+		api.activitypub.update.profile({ uid }, { uid: updateUid });
 
 		return await User.getUserFields(updateUid, [
 			'email', 'username', 'userslug',
@@ -71,18 +77,75 @@ module.exports = function (User) {
 	};
 
 	async function validateData(callerUid, data) {
-		await isEmailAvailable(data, data.uid);
+		await isEmailValid(data);
 		await isUsernameAvailable(data, data.uid);
-		await isWebsiteValid(callerUid, data);
 		await isAboutMeValid(callerUid, data);
 		await isSignatureValid(callerUid, data);
 		isFullnameValid(data);
-		isLocationValid(data);
 		isBirthdayValid(data);
 		isGroupTitleValid(data);
+		await validateCustomFields(data);
 	}
 
-	async function isEmailAvailable(data, uid) {
+	async function validateCustomFields(data) {
+		const keys = await db.getSortedSetRange('user-custom-fields', 0, -1);
+		const fields = (await db.getObjects(keys.map(k => `user-custom-field:${k}`))).filter(Boolean);
+		const reputation = await User.getUserField(data.uid, 'reputation');
+
+		fields.forEach((field) => {
+			const { key, type } = field;
+			if (data.hasOwnProperty(key)) {
+				const value = data[key];
+				const minRep = field['min:rep'] || 0;
+				if (reputation < minRep && !meta.config['reputation:disabled']) {
+					throw new Error(tx.compile(
+						'error:not-enough-reputation-custom-field', minRep, field.name
+					));
+				}
+
+				if (typeof value === 'string' && value.length > 255) {
+					throw new Error(tx.compile(
+						'error:custom-user-field-value-too-long', field.name
+					));
+				}
+
+				if (type === 'input-number' && !utils.isNumber(value)) {
+					throw new Error(tx.compile(
+						'error:custom-user-field-invalid-number', field.name
+					));
+				} else if (value && type === 'input-text' && validator.isURL(value)) {
+					throw new Error(tx.compile(
+						'error:custom-user-field-invalid-text', field.name
+					));
+				} else if (value && type === 'input-date' && !validator.isDate(value)) {
+					throw new Error(tx.compile(
+						'error:custom-user-field-invalid-date', field.name
+					));
+				} else if (value && field.type === 'input-link' && !validator.isURL(String(value))) {
+					throw new Error(tx.compile(
+						'error:custom-user-field-invalid-link', field.name
+					));
+				} else if (field.type === 'select') {
+					const opts = field['select-options'].split('\n').filter(Boolean);
+					if (!opts.includes(value) && value !== '') {
+						throw new Error(tx.compile(
+							'error:custom-user-field-select-value-invalid', field.name
+						));
+					}
+				} else if (field.type === 'select-multi') {
+					const opts = field['select-options'].split('\n').filter(Boolean);
+					const values = JSON.parse(value || '[]');
+					if (!Array.isArray(values) || !values.every(value => opts.includes(value))) {
+						throw new Error(tx.compile(
+							'error:custom-user-field-select-value-invalid', field.name
+						));
+					}
+				}
+			}
+		});
+	}
+
+	async function isEmailValid(data) {
 		if (!data.email) {
 			return;
 		}
@@ -90,14 +153,6 @@ module.exports = function (User) {
 		data.email = data.email.trim();
 		if (!utils.isEmailValid(data.email)) {
 			throw new Error('[[error:invalid-email]]');
-		}
-		const email = await User.getUserField(uid, 'email');
-		if (email === data.email) {
-			return;
-		}
-		const available = await User.email.available(data.email);
-		if (!available) {
-			throw new Error('[[error:email-taken]]');
 		}
 	}
 
@@ -146,16 +201,6 @@ module.exports = function (User) {
 	}
 	User.checkUsername = async username => isUsernameAvailable({ username });
 
-	async function isWebsiteValid(callerUid, data) {
-		if (!data.website) {
-			return;
-		}
-		if (data.website.length > 255) {
-			throw new Error('[[error:invalid-website]]');
-		}
-		await User.checkMinReputation(callerUid, data.uid, 'min:rep:website');
-	}
-
 	async function isAboutMeValid(callerUid, data) {
 		if (!data.aboutme) {
 			return;
@@ -171,7 +216,8 @@ module.exports = function (User) {
 		if (!data.signature) {
 			return;
 		}
-		if (data.signature !== undefined && data.signature.length > meta.config.maximumSignatureLength) {
+		const signature = data.signature.replace(/\r\n/g, '\n');
+		if (signature.length > meta.config.maximumSignatureLength) {
 			throw new Error(`[[error:signature-too-long, ${meta.config.maximumSignatureLength}]]`);
 		}
 		await User.checkMinReputation(callerUid, data.uid, 'min:rep:signature');
@@ -180,12 +226,6 @@ module.exports = function (User) {
 	function isFullnameValid(data) {
 		if (data.fullname && (validator.isURL(data.fullname) || data.fullname.length > 255)) {
 			throw new Error('[[error:invalid-fullname]]');
-		}
-	}
-
-	function isLocationValid(data) {
-		if (data.location && (validator.isURL(data.location) || data.location.length > 255)) {
-			throw new Error('[[error:invalid-location]]');
 		}
 	}
 
@@ -232,17 +272,18 @@ module.exports = function (User) {
 		}
 		const reputation = await User.getUserField(uid, 'reputation');
 		if (reputation < meta.config[setting]) {
-			throw new Error(`[[error:not-enough-reputation-${setting.replace(/:/g, '-')}]]`);
+			throw new Error(`[[error:not-enough-reputation-${setting.replace(/:/g, '-')}, ${meta.config[setting]}]]`);
 		}
 	};
 
 	async function updateEmail(uid, newEmail) {
-		let oldEmail = await User.getUserField(uid, 'email');
+		let oldEmail = await db.getObjectField(`user:${uid}`, 'email');
 		oldEmail = oldEmail || '';
 		if (oldEmail === newEmail) {
 			return;
 		}
 
+		// 👉 Looking for email change logic? src/user/email.js (UserEmail.confirmByUid)
 		if (newEmail) {
 			await User.email.sendValidationEmail(uid, {
 				email: newEmail,
@@ -251,11 +292,11 @@ module.exports = function (User) {
 		}
 	}
 
-	async function updateUsername(uid, newUsername) {
+	async function updateUsername(uid, newUsername, callerUid) {
 		if (!newUsername) {
 			return;
 		}
-		const userData = await User.getUserFields(uid, ['username', 'userslug']);
+		const userData = await db.getObjectFields(`user:${uid}`, ['username', 'userslug']);
 		if (userData.username === newUsername) {
 			return;
 		}
@@ -264,7 +305,7 @@ module.exports = function (User) {
 		await Promise.all([
 			updateUidMapping('username', uid, newUsername, userData.username),
 			updateUidMapping('userslug', uid, newUserslug, userData.userslug),
-			db.sortedSetAdd(`user:${uid}:usernames`, now, `${newUsername}:${now}`),
+			db.sortedSetAdd(`user:${uid}:usernames`, now, `${newUsername}:${now}:${callerUid}`),
 		]);
 		await db.sortedSetRemove('username:sorted', `${userData.username.toLowerCase()}:${uid}`);
 		await db.sortedSetAdd('username:sorted', 0, `${newUsername.toLowerCase()}:${uid}`);
@@ -282,7 +323,7 @@ module.exports = function (User) {
 	}
 
 	async function updateFullname(uid, newFullname) {
-		const fullname = await User.getUserField(uid, 'fullname');
+		const fullname = await db.getObjectField(`user:${uid}`, 'fullname');
 		await updateUidMapping('fullname', uid, newFullname, fullname);
 		if (newFullname !== fullname) {
 			if (fullname) {
@@ -311,13 +352,18 @@ module.exports = function (User) {
 		const isSelf = parseInt(uid, 10) === parseInt(data.uid, 10);
 
 		if (!isAdmin && !isSelf) {
-			throw new Error('[[user:change_password_error_privileges]]');
+			throw new Error('[[user:change-password-error-privileges]]');
 		}
+
+		await plugins.hooks.fire('filter:password.check', { password: data.newPassword, uid: data.uid });
 
 		if (isSelf && hasPassword) {
 			const correct = await User.isPasswordCorrect(data.uid, data.currentPassword, data.ip);
 			if (!correct) {
-				throw new Error('[[user:change_password_error_wrong_current]]');
+				throw new Error('[[user:change-password-error-wrong-current]]');
+			}
+			if (data.currentPassword === data.newPassword) {
+				throw new Error('[[user:change-password-error-same-password]]');
 			}
 		}
 
@@ -331,6 +377,7 @@ module.exports = function (User) {
 			User.reset.cleanByUid(data.uid),
 			User.reset.updateExpiry(data.uid),
 			User.auth.revokeAllSessions(data.uid),
+			User.email.expireValidation(data.uid),
 		]);
 
 		plugins.hooks.fire('action:password.change', { uid: uid, targetUid: data.uid });
