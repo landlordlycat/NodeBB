@@ -5,7 +5,7 @@ const _ = require('lodash');
 
 const db = require('../database');
 const user = require('../user');
-const groups = require('../groups');
+const topics = require('../topics');
 const plugins = require('../plugins');
 const privileges = require('../privileges');
 const cache = require('../cache');
@@ -17,12 +17,13 @@ require('./data')(Categories);
 require('./create')(Categories);
 require('./delete')(Categories);
 require('./topics')(Categories);
-require('./unread')(Categories);
 require('./activeusers')(Categories);
 require('./recentreplies')(Categories);
 require('./update')(Categories);
 require('./watch')(Categories);
 require('./search')(Categories);
+
+Categories.icons = require('./icon');
 
 Categories.exists = async function (cids) {
 	return await db.exists(
@@ -30,8 +31,15 @@ Categories.exists = async function (cids) {
 	);
 };
 
+Categories.existsByHandle = async function (handle) {
+	if (Array.isArray(handle)) {
+		return await db.isSortedSetMembers('categoryhandle:cid', handle);
+	}
+	return await db.isSortedSetMember('categoryhandle:cid', handle);
+};
+
 Categories.getCategoryById = async function (data) {
-	const categories = await Categories.getCategories([data.cid], data.uid);
+	const categories = await Categories.getCategories([data.cid]);
 	if (!categories[0]) {
 		return null;
 	}
@@ -39,7 +47,7 @@ Categories.getCategoryById = async function (data) {
 	data.category = category;
 
 	const promises = [
-		Categories.getCategoryTopics(data),
+		data.cid !== '-1' ? Categories.getCategoryTopics(data) : [],
 		Categories.getTopicCount(data),
 		Categories.getWatchState([data.cid], data.uid),
 		getChildrenTree(category, data.uid),
@@ -54,6 +62,7 @@ Categories.getCategoryById = async function (data) {
 	category.nextStart = topics.nextStart;
 	category.topic_count = topicCount;
 	category.isWatched = watchState[0] === Categories.watchStates.watching;
+	category.isTracked = watchState[0] === Categories.watchStates.tracking;
 	category.isNotWatched = watchState[0] === Categories.watchStates.notwatching;
 	category.isIgnored = watchState[0] === Categories.watchStates.ignoring;
 	category.parent = parent;
@@ -63,7 +72,11 @@ Categories.getCategoryById = async function (data) {
 		category: category,
 		...data,
 	});
-	return result.category;
+	return { ...result.category };
+};
+
+Categories.getCidByHandle = async function (handle) {
+	return await db.sortedSetScore('categoryhandle:cid', handle);
 };
 
 Categories.getAllCidsFromSet = async function (key) {
@@ -78,19 +91,23 @@ Categories.getAllCidsFromSet = async function (key) {
 	return cids.slice();
 };
 
-Categories.getAllCategories = async function (uid) {
+Categories.getAllCategories = async function () {
 	const cids = await Categories.getAllCidsFromSet('categories:cid');
-	return await Categories.getCategories(cids, uid);
+	return await Categories.getCategories(cids);
 };
 
 Categories.getCidsByPrivilege = async function (set, uid, privilege) {
 	const cids = await Categories.getAllCidsFromSet(set);
+	if (set === 'categories:cid') {
+		cids.unshift(-1);
+	}
+
 	return await privileges.categories.filterCids(privilege, cids, uid);
 };
 
 Categories.getCategoriesByPrivilege = async function (set, uid, privilege) {
 	const cids = await Categories.getCidsByPrivilege(set, uid, privilege);
-	return await Categories.getCategories(cids, uid);
+	return await Categories.getCategories(cids);
 };
 
 Categories.getModerators = async function (cid) {
@@ -99,34 +116,10 @@ Categories.getModerators = async function (cid) {
 };
 
 Categories.getModeratorUids = async function (cids) {
-	const groupNames = cids.reduce((memo, cid) => {
-		memo.push(`cid:${cid}:privileges:moderate`);
-		memo.push(`cid:${cid}:privileges:groups:moderate`);
-		return memo;
-	}, []);
-
-	const memberSets = await groups.getMembersOfGroups(groupNames);
-	// Every other set is actually a list of user groups, not uids, so convert those to members
-	const sets = memberSets.reduce((memo, set, idx) => {
-		if (idx % 2) {
-			memo.groupNames.push(set);
-		} else {
-			memo.uids.push(set);
-		}
-
-		return memo;
-	}, { groupNames: [], uids: [] });
-
-	const uniqGroups = _.uniq(_.flatten(sets.groupNames));
-	const groupUids = await groups.getMembersOfGroups(uniqGroups);
-	const map = _.zipObject(uniqGroups, groupUids);
-	const moderatorUids = cids.map(
-		(cid, index) => _.uniq(sets.uids[index].concat(_.flatten(sets.groupNames[index].map(g => map[g]))))
-	);
-	return moderatorUids;
+	return await privileges.categories.getUidsWithPrivilege(cids, 'moderate');
 };
 
-Categories.getCategories = async function (cids, uid) {
+Categories.getCategories = async function (cids) {
 	if (!Array.isArray(cids)) {
 		throw new Error('[[error:invalid-cid]]');
 	}
@@ -134,20 +127,44 @@ Categories.getCategories = async function (cids, uid) {
 	if (!cids.length) {
 		return [];
 	}
-	uid = parseInt(uid, 10);
 
-	const [categories, tagWhitelist, hasRead] = await Promise.all([
+	const [categories, tagWhitelist] = await Promise.all([
 		Categories.getCategoriesData(cids),
 		Categories.getTagWhitelist(cids),
-		Categories.hasReadCategories(cids, uid),
 	]);
 	categories.forEach((category, i) => {
 		if (category) {
 			category.tagWhitelist = tagWhitelist[i];
-			category['unread-class'] = (category.topic_count === 0 || (hasRead[i] && uid !== 0)) ? '' : 'unread';
 		}
 	});
 	return categories;
+};
+
+Categories.setUnread = async function (tree, cids, uid) {
+	if (uid <= 0) {
+		return;
+	}
+	const { unreadCids } = await topics.getUnreadData({
+		uid: uid,
+		cid: cids,
+	});
+	if (!unreadCids.length) {
+		return;
+	}
+
+	function setCategoryUnread(category) {
+		if (category) {
+			category.unread = false;
+			if (unreadCids.includes(category.cid)) {
+				category.unread = category.topic_count > 0 && true;
+			} else if (category.children.length) {
+				category.children.forEach(setCategoryUnread);
+				category.unread = category.children.some(c => c && c.unread);
+			}
+			category['unread-class'] = category.unread ? 'unread' : '';
+		}
+	}
+	tree.forEach(setCategoryUnread);
 };
 
 Categories.getTagWhitelist = async function (cids) {
@@ -234,10 +251,6 @@ async function getChildrenTree(category, uid) {
 	let childrenData = await Categories.getCategoriesData(childrenCids);
 	childrenData = childrenData.filter(Boolean);
 	childrenCids = childrenData.map(child => child.cid);
-	const hasRead = await Categories.hasReadCategories(childrenCids, uid);
-	childrenData.forEach((child, i) => {
-		child['unread-class'] = (child.topic_count === 0 || (hasRead[i] && uid !== 0)) ? '' : 'unread';
-	});
 	Categories.getTree([category].concat(childrenData), category.parentCid);
 }
 
@@ -373,7 +386,7 @@ async function getSelectData(cids, fields) {
 }
 
 Categories.buildForSelectCategories = function (categories, fields, parentCid) {
-	function recursive(category, categoriesData, level, depth) {
+	function recursive({ ...category }, categoriesData, level, depth) {
 		const bullet = level ? '&bull; ' : '';
 		category.value = category.cid;
 		category.level = level;
@@ -389,10 +402,17 @@ Categories.buildForSelectCategories = function (categories, fields, parentCid) {
 
 	const rootCategories = categories.filter(category => category && category.parentCid === parentCid);
 
+	rootCategories.sort((a, b) => {
+		if (a.order !== b.order) {
+			return a.order - b.order;
+		}
+		return a.cid - b.cid;
+	});
+
 	rootCategories.forEach(category => recursive(category, categoriesData, '', 0));
 
 	const pickFields = [
-		'cid', 'name', 'level', 'icon',	'parentCid',
+		'cid', 'name', 'level', 'icon', 'parentCid',
 		'color', 'bgColor', 'backgroundImage', 'imageClass',
 	];
 	fields = fields || [];

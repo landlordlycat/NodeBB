@@ -1,124 +1,74 @@
 
-<div class="row post-cache">
-	<div class="col-lg-12">
-		<div class="row">
-			<div class="col-lg-3">
-				<div class="panel panel-default">
-					<div class="panel-heading">[[admin/advanced/cache:post-cache]]</div>
-					<div class="panel-body">
-						<div class="checkbox" data-name="post">
-							<label class="mdl-switch mdl-js-switch mdl-js-ripple-effect">
-								<input class="mdl-switch__input" type="checkbox" {{{if postCache.enabled}}}checked{{{end}}}>
-							</label>
-						</div>
+<div class="post-cache settings d-flex flex-column gap-2 px-lg-4">
+	<div class="d-flex border-bottom py-2 m-0 sticky-top acp-page-main-header align-items-center justify-content-between flex-wrap gap-2">
+		<div class="">
+			<h4 class="fw-bold tracking-tight mb-0">[[admin/advanced/cache:cache]]</h4>
+		</div>
+		<div class="d-flex align-items-center">
+			<button id="save" class="btn btn-primary btn-sm fw-semibold ff-secondary w-100 text-center text-nowrap">[[admin/admin:save-changes]]</button>
+		</div>
+	</div>
 
-						<span>{postCache.length} / {postCache.max}</span><br/>
 
-						<div class="progress">
-							<div class="progress-bar" role="progressbar" aria-valuenow="{postCache.percentFull}" aria-valuemin="0" aria-valuemax="100" style="width: {postCache.percentFull}%;">
-								[[admin/advanced/cache:percent-full, {postCache.percentFull}]]
+	<div class="row px-2">
+		{{{ each caches }}}
+		<div class="col-xl-3">
+			<div class="card">
+				<div class="card-header">
+					<div class="d-flex gap-2 justify-content-between align-items-center">
+						<div class="d-flex gap-1 align-items-center">
+							<div class="form-check form-switch text-sm" data-name="{@key}" style="min-height: initial;">
+								<input class="form-check-input" type="checkbox" {{{if caches.enabled}}}checked{{{end}}}>
 							</div>
+							[[admin/advanced/cache:{@key}-cache]]
 						</div>
-
-						<label>Hits:</label> <span>{postCache.hits}</span><br/>
-						<label>Misses:</label> <span>{postCache.misses}</span><br/>
-						<label>Hit Ratio:</label> <span>{postCache.hitRatio}</span><br/>
-
-						<hr/>
-
-						<div class="form-group">
-							<label for="postCacheSize">[[admin/advanced/cache:post-cache-size]]</label>
-							<input id="postCacheSize" type="text" class="form-control" value="" data-field="postCacheSize">
+						<div class="d-flex gap-1">
+							<a href="{config.relative_path}/api/admin/advanced/cache/dump?name={@key}" class="btn btn-light btn-sm"><i class="fa fa-download"></i></a>
+							<a class="btn btn-sm btn-danger clear" data-name="{@key}"><i class="fa fa-trash"></i></a>
 						</div>
-						<a href="{config.relative_path}/api/admin/advanced/cache/dump?name=post" class="btn btn-sm btn-default"><i class="fa fa-download"></i></a>
-						<a class="btn btn-sm btn-danger clear" data-name="post"><i class="fa fa-trash"></i></a>
 					</div>
 				</div>
-			</div>
-
-			<!-- IF objectCache -->
-			<div class="col-lg-3">
-				<div class="panel panel-default">
-					<div class="panel-heading">Object Cache</div>
-					<div class="panel-body">
-						<div class="checkbox" data-name="object">
-							<label class="mdl-switch mdl-js-switch mdl-js-ripple-effect">
-								<input class="mdl-switch__input" type="checkbox" {{{if objectCache.enabled}}}checked{{{end}}}>
-							</label>
+				<div class="card-body">
+					<div class="progress mb-3" style="height:20px;">
+						<div class="progress-bar" role="progressbar" aria-valuenow="{./percentFull}" aria-valuemin="0" aria-valuemax="100" style="width: {./percentFull}%;">
+							[[admin/advanced/cache:percent-full, {./percentFull}]]
 						</div>
-						<span>{objectCache.length} / {objectCache.max}</span><br/>
-						<div class="progress">
-							<div class="progress-bar" role="progressbar" aria-valuenow="{objectCache.percentFull}" aria-valuemin="0" aria-valuemax="100" style="width: {objectCache.percentFull}%;">
-								[[admin/advanced/cache:percent-full, {objectCache.percentFull}]]
-							</div>
-						</div>
-
-						<label>Hits:</label> <span>{objectCache.hits}</span><br/>
-						<label>Misses:</label> <span>{objectCache.misses}</span><br/>
-						<label>Hit Ratio:</label> <span>{objectCache.hitRatio}</span><br/>
-						<a href="{config.relative_path}/api/admin/advanced/cache/dump?name=object" class="btn btn-sm btn-default"><i class="fa fa-download"></i></a>
-						<a class="btn btn-sm btn-danger clear" data-name="object"><i class="fa fa-trash"></i></a>
 					</div>
-				</div>
-			</div>
-			<!-- ENDIF objectCache -->
 
-			<div class="col-lg-3">
-				<div class="panel panel-default">
-					<div class="panel-heading">Group Cache</div>
-					<div class="panel-body">
-						<div class="checkbox" data-name="group">
-							<label class="mdl-switch mdl-js-switch mdl-js-ripple-effect">
-								<input class="mdl-switch__input" type="checkbox" {{{if groupCache.enabled}}}checked{{{end}}}>
-							</label>
-						</div>
-						<span>{groupCache.length} / {groupCache.max}</span><br/>
-
-						<div class="progress">
-							<div class="progress-bar" role="progressbar" aria-valuenow="{groupCache.percentFull}" aria-valuemin="0" aria-valuemax="100" style="width: {groupCache.percentFull}%;">
-								[[admin/advanced/cache:percent-full, {groupCache.percentFull}]]
-							</div>
-						</div>
-
-						<label>Hits:</label> <span>{groupCache.hits}</span><br/>
-						<label>Misses:</label> <span>{groupCache.misses}</span><br/>
-						<label>Hit Ratio:</label> <span>{groupCache.hitRatio}</span><br/>
-						<a href="{config.relative_path}/api/admin/advanced/cache/dump?name=group" class="btn btn-sm btn-default"><i class="fa fa-download"></i></a>
-						<a class="btn btn-sm btn-danger clear" data-name="group"><i class="fa fa-trash"></i></a>
+					<div class="mb-2">
+						<label>Size:</label> <span class="fw-bold">{{{if ./length}}}{./length}{{{else}}}{./itemCount}{{{end}}} / {{{if ./max}}}{./max}{{{else}}}{./maxSize}{{{end}}}</span>
 					</div>
-				</div>
-			</div>
 
-			<div class="col-lg-3">
-				<div class="panel panel-default">
-					<div class="panel-heading">Local Cache</div>
-					<div class="panel-body">
-						<div class="checkbox" data-name="local">
-							<label class="mdl-switch mdl-js-switch mdl-js-ripple-effect">
-								<input class="mdl-switch__input" type="checkbox" {{{if localCache.enabled}}}checked{{{end}}}>
-							</label>
-						</div>
-						<span>{localCache.length} / {localCache.max}</span><br/>
-
-						<div class="progress">
-							<div class="progress-bar" role="progressbar" aria-valuenow="{localCache.percentFull}" aria-valuemin="0" aria-valuemax="100" style="width: {localCache.percentFull}%;">
-								[[admin/advanced/cache:percent-full, {localCache.percentFull}]]
-							</div>
-						</div>
-
-						<label>Hits:</label> <span>{localCache.hits}</span><br/>
-						<label>Misses:</label> <span>{localCache.misses}</span><br/>
-						<label>Hit Ratio:</label> <span>{localCache.hitRatio}</span><br/>
-						<a href="{config.relative_path}/api/admin/advanced/cache/dump?name=local" class="btn btn-sm btn-default"><i class="fa fa-download"></i></a>
-						<a class="btn btn-sm btn-danger clear" data-name="local"><i class="fa fa-trash"></i></a>
+					<div class="mb-2">
+						<label>Hits:</label> <span class="fw-bold">{./hits}</span>
 					</div>
+					<div class="mb-2">
+						<label>Misses:</label> <span class="fw-bold">{./misses}</span>
+					</div>
+					<div class="mb-2">
+						<label>Hit Ratio:</label> <span class="fw-bold">{./hitRatio}</span>
+					</div>
+					<div class="mb-2">
+						<label>Hits / Sec:</label> <span class="fw-bold">{./hitsPerSecond}</span>
+					</div>
+
+					{{{ if ./ttl }}}
+					<div class="mb-2">
+						<label>TTL:</label> <span class="fw-bold">{./ttl}</span>
+					</div>
+					{{{ end }}}
+					{{{ if (@key == "post") }}}
+					<hr/>
+					<div class="mb-3">
+						<label for="postCacheSize">[[admin/advanced/cache:post-cache-size]]</label>
+						<input id="postCacheSize" type="text" class="form-control" value="" data-field="postCacheSize">
+					</div>
+					{{{ end }}}
+
 				</div>
 			</div>
 		</div>
+		{{{ end }}}
 	</div>
 </div>
 
-
-<button id="save" class="floating-button mdl-button mdl-js-button mdl-button--fab mdl-js-ripple-effect mdl-button--colored">
-    <i class="material-icons">save</i>
-</button>

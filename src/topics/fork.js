@@ -1,8 +1,6 @@
 
 'use strict';
 
-const async = require('async');
-
 const db = require('../database');
 const posts = require('../posts');
 const categories = require('../categories');
@@ -11,7 +9,7 @@ const plugins = require('../plugins');
 const meta = require('../meta');
 
 module.exports = function (Topics) {
-	Topics.createTopicFromPosts = async function (uid, title, pids, fromTid) {
+	Topics.createTopicFromPosts = async function (uid, title, pids, fromTid, cid) {
 		if (title) {
 			title = title.trim();
 		}
@@ -26,10 +24,19 @@ module.exports = function (Topics) {
 			throw new Error('[[error:invalid-pid]]');
 		}
 
-		pids.sort((a, b) => a - b);
+		if (pids.every(isFinite)) {
+			pids.sort((a, b) => a - b);
+		} else {
+			const pidsDatetime = (await db.sortedSetScores(`tid:${fromTid}:posts`, pids)).map(t => t || 0);
+			const map = pids.reduce((map, pid, idx) => map.set(pidsDatetime[idx], pid), new Map());
+			pidsDatetime.sort((a, b) => a - b);
+			pids = pidsDatetime.map(key => map.get(key));
+		}
 
 		const mainPid = pids[0];
-		const cid = await posts.getCidByPid(mainPid);
+		if (!cid) {
+			cid = await posts.getCidByPid(mainPid);
+		}
 
 		const [postData, isAdminOrMod] = await Promise.all([
 			posts.getPostData(mainPid),
@@ -55,13 +62,14 @@ module.exports = function (Topics) {
 		const tid = await Topics.create(result.params);
 		await Topics.updateTopicBookmarks(fromTid, pids);
 
-		await async.eachSeries(pids, async (pid) => {
+		for (const pid of pids) {
+			/* eslint-disable no-await-in-loop */
 			const canEdit = await privileges.posts.canEdit(pid, uid);
 			if (!canEdit.flag) {
 				throw new Error(canEdit.message);
 			}
 			await Topics.movePostToTopic(uid, pid, tid, scheduled);
-		});
+		}
 
 		await Topics.updateLastPostTime(tid, scheduled ? (postData.timestamp + 1) : Date.now());
 
@@ -69,8 +77,12 @@ module.exports = function (Topics) {
 			Topics.setTopicFields(tid, {
 				upvotes: postData.upvotes,
 				downvotes: postData.downvotes,
+				forkedFromTid: fromTid,
+				forkerUid: uid,
+				forkTimestamp: Date.now(),
 			}),
 			db.sortedSetsAdd(['topics:votes', `cid:${cid}:tids:votes`], postData.votes, tid),
+			Topics.events.log(fromTid, { type: 'fork', uid, href: `/topic/${tid}` }),
 		]);
 
 		plugins.hooks.fire('action:topic.fork', { tid: tid, fromTid: fromTid, uid: uid });
@@ -79,7 +91,7 @@ module.exports = function (Topics) {
 	};
 
 	Topics.movePostToTopic = async function (callerUid, pid, tid, forceScheduled = false) {
-		tid = parseInt(tid, 10);
+		tid = String(tid);
 		const topicData = await Topics.getTopicFields(tid, ['tid', 'scheduled']);
 		if (!topicData.tid) {
 			throw new Error('[[error:no-topic]]');
@@ -97,7 +109,7 @@ module.exports = function (Topics) {
 			throw new Error('[[error:cant-move-from-scheduled-to-existing]]');
 		}
 
-		if (postData.tid === tid) {
+		if (String(postData.tid) === String(tid)) {
 			throw new Error('[[error:cant-move-to-same-topic]]');
 		}
 
@@ -146,7 +158,7 @@ module.exports = function (Topics) {
 			db.sortedSetAdd(`cid:${topicData[1].cid}:pids`, postData.timestamp, postData.pid),
 			db.sortedSetAdd(`cid:${topicData[1].cid}:uid:${postData.uid}:pids`, postData.timestamp, postData.pid),
 		];
-		if (postData.votes > 0) {
+		if (postData.votes > 0 || postData.votes < 0) {
 			tasks.push(db.sortedSetAdd(`cid:${topicData[1].cid}:uid:${postData.uid}:pids:votes`, postData.votes, postData.pid));
 		}
 

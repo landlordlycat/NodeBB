@@ -1,7 +1,6 @@
 
 'use strict';
 
-const async = require('async');
 const _ = require('lodash');
 
 const db = require('../database');
@@ -44,7 +43,7 @@ module.exports = function (Topics) {
 		});
 
 		const [allPostData, callerSettings] = await Promise.all([
-			posts.getPostsFields(teaserPids, ['pid', 'uid', 'timestamp', 'tid', 'content']),
+			posts.getPostsFields(teaserPids, ['pid', 'uid', 'timestamp', 'tid', 'content', 'sourceContent']),
 			user.getSettings(uid),
 		]);
 		let postData = allPostData.filter(post => post && post.pid);
@@ -69,9 +68,7 @@ module.exports = function (Topics) {
 			post.timestampISO = utils.toISOString(post.timestamp);
 			tidToPost[post.tid] = post;
 		});
-		await Promise.all(postData.map(p => posts.parsePost(p)));
-
-		const { tags } = await plugins.hooks.fire('filter:teasers.configureStripTags', { tags: utils.stripTags.concat(['img']) });
+		await Promise.all(postData.map(p => posts.parsePost(p, 'plaintext')));
 
 		const teasers = topics.map((topic, index) => {
 			if (!topic) {
@@ -79,9 +76,6 @@ module.exports = function (Topics) {
 			}
 			if (tidToPost[topic.tid]) {
 				tidToPost[topic.tid].index = calcTeaserIndex(teaserPost, counts[index], sortNewToOld);
-				if (tidToPost[topic.tid].content) {
-					tidToPost[topic.tid].content = utils.stripHTMLTags(replaceImgWithAltText(tidToPost[topic.tid].content), tags);
-				}
 			}
 			return tidToPost[topic.tid];
 		});
@@ -101,22 +95,18 @@ module.exports = function (Topics) {
 		return postCountInTopic;
 	}
 
-	function replaceImgWithAltText(str) {
-		return String(str).replace(/<img .*?alt="(.*?)"[^>]*>/gi, '$1');
-	}
-
 	async function handleBlocks(uid, teasers) {
 		const blockedUids = await user.blocks.list(uid);
 		if (!blockedUids.length) {
 			return teasers;
 		}
 
-		return await async.mapSeries(teasers, async (postData) => {
+		return await Promise.all(teasers.map(async (postData) => {
 			if (blockedUids.includes(parseInt(postData.uid, 10))) {
 				return await getPreviousNonBlockedPost(postData, blockedUids);
 			}
 			return postData;
-		});
+		}));
 	}
 
 	async function getPreviousNonBlockedPost(postData, blockedUids) {

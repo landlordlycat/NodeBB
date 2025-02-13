@@ -1,5 +1,8 @@
 'use strict';
 
+const winston = require('winston');
+const util = require('util');
+
 const user = require('.');
 const db = require('../database');
 const meta = require('../meta');
@@ -7,7 +10,15 @@ const privileges = require('../privileges');
 const plugins = require('../plugins');
 const utils = require('../utils');
 
+const sleep = util.promisify(setTimeout);
+
 const Interstitials = module.exports;
+
+Interstitials.get = async (req, userData) => plugins.hooks.fire('filter:register.interstitial', {
+	req,
+	userData,
+	interstitials: [],
+});
 
 Interstitials.email = async (data) => {
 	if (!data.userData) {
@@ -17,6 +28,11 @@ Interstitials.email = async (data) => {
 		return data;
 	}
 
+	const [hasPassword, hasPending] = await Promise.all([
+		user.hasPassword(data.userData.uid),
+		user.email.isValidationPending(data.userData.uid),
+	]);
+
 	let email;
 	if (data.userData.uid) {
 		email = await user.getUserField(data.userData.uid, 'email');
@@ -24,35 +40,66 @@ Interstitials.email = async (data) => {
 
 	data.interstitials.push({
 		template: 'partials/email_update',
-		data: { email },
+		data: {
+			email,
+			requireEmailAddress: meta.config.requireEmailAddress,
+			issuePasswordChallenge: hasPassword,
+			hasPending,
+		},
 		callback: async (userData, formData) => {
+			if (formData.email) {
+				formData.email = String(formData.email).trim();
+			}
+
 			// Validate and send email confirmation
 			if (userData.uid) {
-				const [isAdminOrGlobalMod, canEdit, current] = await Promise.all([
-					user.isAdminOrGlobalMod(data.req.uid),
+				const isSelf = parseInt(userData.uid, 10) === parseInt(data.req.uid, 10);
+				const [isPasswordCorrect, canEdit, { email: current, 'email:confirmed': confirmed }, { allowed, error }] = await Promise.all([
+					user.isPasswordCorrect(userData.uid, formData.password, data.req.ip),
 					privileges.users.canEdit(data.req.uid, userData.uid),
-					user.getUserField(userData.uid, 'email'),
+					user.getUserFields(userData.uid, ['email', 'email:confirmed']),
+					plugins.hooks.fire('filter:user.saveEmail', {
+						uid: userData.uid,
+						email: formData.email,
+						registration: false,
+						allowed: true, // change this value to disallow
+						error: '[[error:invalid-email]]',
+					}),
 				]);
 
+				if (!isPasswordCorrect) {
+					await sleep(2000);
+				}
+
 				if (formData.email && formData.email.length) {
-					if (!utils.isEmailValid(formData.email)) {
-						throw new Error('[[error:invalid-email]]');
+					if (!allowed || !utils.isEmailValid(formData.email)) {
+						throw new Error(error);
 					}
 
+					// Handle errors when setting to same email (unconfirmed accts only)
 					if (formData.email === current) {
-						throw new Error('[[error:email-nochange]]');
+						if (confirmed) {
+							throw new Error('[[error:email-nochange]]');
+						} else if (!await user.email.canSendValidation(userData.uid, current)) {
+							throw new Error(`[[error:confirm-email-already-sent, ${meta.config.emailConfirmInterval}]]`);
+						}
 					}
 
 					// Admins editing will auto-confirm, unless editing their own email
-					if (isAdminOrGlobalMod && userData.uid !== data.req.uid) {
-						await user.setUserField(userData.uid, 'email', formData.email);
-						await user.email.confirmByUid(userData.uid);
-					} else if (canEdit) {
+					if (canEdit) {
+						if (hasPassword && !isPasswordCorrect) {
+							throw new Error('[[error:invalid-password]]');
+						}
+
 						await user.email.sendValidationEmail(userData.uid, {
 							email: formData.email,
 							force: true,
+						}).catch((err) => {
+							winston.error(`[user.interstitials.email] Validation email failed to send\n[emailer.send] ${err.stack}`);
 						});
-						data.req.session.emailChanged = 1;
+						if (isSelf) {
+							data.req.session.emailChanged = 1;
+						}
 					} else {
 						// User attempting to edit another user's email -- not allowed
 						throw new Error('[[error:no-privileges]]');
@@ -62,12 +109,24 @@ Interstitials.email = async (data) => {
 						throw new Error('[[error:invalid-email]]');
 					}
 
-					if (current) {
+					if (current.length && (!hasPassword || (hasPassword && isPasswordCorrect))) {
 						// User explicitly clearing their email
-						await user.email.remove(userData.uid, data.req.session.id);
+						await user.email.remove(userData.uid, isSelf ? data.req.session.id : null);
 					}
 				}
 			} else {
+				const { allowed, error } = await plugins.hooks.fire('filter:user.saveEmail', {
+					uid: null,
+					email: formData.email,
+					registration: true,
+					allowed: true, // change this value to disallow
+					error: '[[error:invalid-email]]',
+				});
+
+				if (!allowed || (meta.config.requireEmailAddress && !(formData.email && formData.email.length))) {
+					throw new Error(error);
+				}
+
 				// New registrants have the confirm email sent from user.create()
 				userData.email = formData.email;
 			}
@@ -105,7 +164,7 @@ Interstitials.gdpr = async function (data) {
 				userData.gdpr_consent = true;
 			}
 
-			next(userData.gdpr_consent ? null : new Error('[[register:gdpr_consent_denied]]'));
+			next(userData.gdpr_consent ? null : new Error('[[register:gdpr-consent-denied]]'));
 		},
 	});
 	return data;
@@ -143,7 +202,7 @@ Interstitials.tou = async function (data) {
 				userData.acceptTos = true;
 			}
 
-			next(userData.acceptTos ? null : new Error('[[register:terms_of_use_error]]'));
+			next(userData.acceptTos ? null : new Error('[[register:terms-of-use-error]]'));
 		},
 	});
 	return data;
