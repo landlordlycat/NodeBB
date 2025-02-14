@@ -2,8 +2,8 @@
 
 
 const assert = require('assert');
+const validator = require('validator');
 const { JSDOM } = require('jsdom');
-const utils = require('../public/src/utils');
 const slugify = require('../src/slugify');
 const db = require('./mocks/databasemock');
 
@@ -11,49 +11,13 @@ describe('Utility Methods', () => {
 	// https://gist.github.com/robballou/9ee108758dc5e0e2d028
 	// create some jsdom magic to allow jQuery to work
 	const dom = new JSDOM('<html><body></body></html>');
-	const { window } = dom;
-	global.window = window;
+	global.window = dom.window;
+	global.document = dom.window.document;
 	global.jQuery = require('jquery');
 	global.$ = global.jQuery;
 	const { $ } = global;
-	require('jquery-deserialize');
-	require('jquery-serializeobject');
 
-	it('should serialize/deserialize form data properly', () => {
-		const formSerialize = $(`
-			<form id="form-serialize">
-				<input name="a" value="1">
-				<input name="a" value="2">
-				<input name="bar" value="test">
-				<input name="check1" type="checkbox" checked>
-				<input name="check2" type="checkbox">
-			</form>
-		`);
-		const sampleData = {
-			a: ['1', '2'],
-			bar: 'test',
-			check1: 'on',
-		};
-		const data = formSerialize.serializeObject();
-		assert.deepStrictEqual(data, sampleData);
-
-		const formDeserialize = $(`
-			<form>
-				<input id="input1" name="a"/>
-				<input id="input2" name="a"/>
-				<input id="input3" name="bar"/>
-				<input id="input4" name="check1" type="checkbox">
-				<input id="input5" name="check2" type="checkbox">
-			</form>
-		`);
-
-		formDeserialize.deserialize(sampleData);
-		assert.strictEqual(formDeserialize.find('#input1').val(), sampleData.a[0]);
-		assert.strictEqual(formDeserialize.find('#input2').val(), sampleData.a[1]);
-		assert.strictEqual(formDeserialize.find('#input3').val(), sampleData.bar);
-		assert.strictEqual(formDeserialize.find('#input4').prop('checked'), true);
-		assert.strictEqual(formDeserialize.find('#input5').prop('checked'), false);
-	});
+	const utils = require('../public/src/utils');
 
 	// https://github.com/jprichardson/string.js/blob/master/test/string.test.js
 	it('should decode HTML entities', (done) => {
@@ -71,6 +35,7 @@ describe('Utility Methods', () => {
 		);
 		done();
 	});
+
 	it('should strip HTML tags', (done) => {
 		assert.strictEqual(utils.stripHTMLTags('<p>just <b>some</b> text</p>'), 'just some text');
 		assert.strictEqual(utils.stripHTMLTags('<p>just <b>some</b> text</p>', ['p']), 'just <b>some</b> text');
@@ -137,17 +102,32 @@ describe('Utility Methods', () => {
 		});
 	});
 
-	describe('UUID generation', () => {
+	describe('UUID generation / secureRandom', () => {
 		it('return unique random value every time', () => {
-			const uuid1 = utils.generateUUID();
-			const uuid2 = utils.generateUUID();
+			delete require.cache[require.resolve('../src/utils')];
+			const { generateUUID } = require('../src/utils');
+			const uuid1 = generateUUID();
+			const uuid2 = generateUUID();
 			assert.notEqual(uuid1, uuid2, 'matches');
+		});
+
+		it('should return a random number between 1-10 inclusive', () => {
+			const { secureRandom } = require('../src/utils');
+			const r1 = secureRandom(1, 10);
+			assert(r1 >= 1);
+			assert(r1 <= 10);
+		});
+
+		it('should always return 3', () => {
+			const { secureRandom } = require('../src/utils');
+			const r1 = secureRandom(3, 3);
+			assert.strictEqual(r1, 3);
 		});
 	});
 
 	describe('cleanUpTag', () => {
 		it('should cleanUp a tag', (done) => {
-			const cleanedTag = utils.cleanUpTag(',/#!$%^*;TaG1:{}=_`<>\'"~()?|');
+			const cleanedTag = utils.cleanUpTag(',/#!$^*;TaG1:{}=_`<>\'"~()?|');
 			assert.equal(cleanedTag, 'tag1');
 			done();
 		});
@@ -168,6 +148,15 @@ describe('Utility Methods', () => {
 		done();
 	});
 
+	it('should get language key', () => {
+		assert.strictEqual(utils.getLanguage(), 'en-GB');
+		global.window.utils = {};
+		global.window.config = { userLang: 'tr' };
+		assert.strictEqual(utils.getLanguage(), 'tr');
+		global.window.config = { defaultLang: 'de' };
+		assert.strictEqual(utils.getLanguage(), 'de');
+	});
+
 	it('should return true if string has language key', (done) => {
 		assert.equal(utils.hasLanguageKey('some text [[topic:title]] and [[user:reputaiton]]'), true);
 		done();
@@ -176,6 +165,42 @@ describe('Utility Methods', () => {
 	it('should return false if string does not have language key', (done) => {
 		assert.equal(utils.hasLanguageKey('some text with no language keys'), false);
 		done();
+	});
+
+	it('should return bootstrap env', () => {
+		assert.strictEqual(utils.findBootstrapEnvironment(), 'xs');
+	});
+
+	it('should check if mobile', () => {
+		assert.strictEqual(utils.isMobile(), true);
+	});
+
+	it('should check password validity', () => {
+		global.ajaxify = {
+			data: {
+				minimumPasswordStrength: 1,
+				minimumPasswordLength: 6,
+			},
+		};
+		const zxcvbn = require('zxcvbn');
+
+		function check(pwd, expectedError) {
+			try {
+				utils.assertPasswordValidity(pwd, zxcvbn);
+				assert(false);
+			} catch (err) {
+				assert.strictEqual(err.message, expectedError);
+			}
+		}
+		check('123456', '[[user:weak-password]]');
+		check('', '[[user:change-password-error]]');
+		check('asd', '[[reset_password:password-too-short]]');
+		check(new Array(513).fill('a').join(''), '[[error:password-too-long]]');
+		utils.assertPasswordValidity('Yzsh31j!a', zxcvbn);
+	});
+
+	it('should generate UUID', () => {
+		assert(validator.isUUID(utils.generateUUID()));
 	});
 
 	it('should shallow merge two objects', (done) => {
@@ -225,7 +250,7 @@ describe('Utility Methods', () => {
 	});
 
 	it('should make number human readable', (done) => {
-		assert.equal(utils.makeNumberHumanReadable(null), null);
+		assert.equal(utils.makeNumberHumanReadable(null), 'null');
 		done();
 	});
 
@@ -259,6 +284,7 @@ describe('Utility Methods', () => {
 	});
 
 	it('should return passed in value if invalid', (done) => {
+		// eslint-disable-next-line no-loss-of-precision
 		const bigInt = -111111111111111111;
 		const result = utils.toISOString(bigInt);
 		assert.equal(bigInt, result);
@@ -281,21 +307,6 @@ describe('Utility Methods', () => {
 		done();
 	});
 
-	it('should return false if not touch device', (done) => {
-		global.document = global.document || {};
-		global.document.documentElement = {};
-		assert(!utils.isTouchDevice());
-		done();
-	});
-
-	it('should return true if touch device', (done) => {
-		global.document.documentElement = {
-			ontouchstart: 1,
-		};
-		assert(utils.isTouchDevice());
-		done();
-	});
-
 	it('should check if element is in viewport', (done) => {
 		const el = $('<div>some text</div>');
 		assert(utils.isElementInViewport(el));
@@ -303,7 +314,6 @@ describe('Utility Methods', () => {
 	});
 
 	it('should get empty object for url params', (done) => {
-		global.document = window.document;
 		const params = utils.params();
 		assert.equal(Object.keys(params), 0);
 		done();
@@ -311,9 +321,17 @@ describe('Utility Methods', () => {
 
 	it('should get url params', (done) => {
 		const params = utils.params({ url: 'http://nodebb.org?foo=1&bar=test&herp=2' });
-		assert.equal(params.foo, 1);
-		assert.equal(params.bar, 'test');
-		assert.equal(params.herp, 2);
+		assert.strictEqual(params.foo, 1);
+		assert.strictEqual(params.bar, 'test');
+		assert.strictEqual(params.herp, 2);
+		done();
+	});
+
+	it('should get url params as arrays', (done) => {
+		const params = utils.params({ url: 'http://nodebb.org?foo=1&bar=test&herp[]=2&herp[]=3' });
+		assert.strictEqual(params.foo, 1);
+		assert.strictEqual(params.bar, 'test');
+		assert.deepStrictEqual(params.herp, [2, 3]);
 		done();
 	});
 
@@ -322,6 +340,13 @@ describe('Utility Methods', () => {
 		done();
 	});
 
+	it('should get the full URLSearchParams object', async () => {
+		const params = utils.params({ url: 'http://nodebb.org?foo=1&bar=test&herp[]=2&herp[]=3', full: true });
+		assert(params instanceof URLSearchParams);
+		assert.strictEqual(params.get('foo'), '1');
+		assert.strictEqual(params.get('bar'), 'test');
+		assert.strictEqual(params.get('herp[]'), '2');
+	});
 
 	describe('toType', () => {
 		it('should return param as is if not string', (done) => {
@@ -475,5 +500,78 @@ describe('Utility Methods', () => {
 		assert(result.hasOwnProperty('user1') && result.hasOwnProperty('user2'));
 		assert.strictEqual(result.user1.uid, uid1);
 		assert.strictEqual(result.user2.uid, uid2);
+	});
+
+	describe('debounce/throttle', () => {
+		it('should call function after x milliseconds once', (done) => {
+			let count = 0;
+			const now = Date.now();
+			const fn = utils.debounce(() => {
+				count += 1;
+				assert.strictEqual(count, 1);
+				assert(Date.now() - now > 50);
+			}, 100);
+			fn();
+			fn();
+			setTimeout(() => done(), 200);
+		});
+
+		it('should call function first if immediate=true', (done) => {
+			let count = 0;
+			const now = Date.now();
+			const fn = utils.debounce(() => {
+				count += 1;
+				assert.strictEqual(count, 1);
+				assert(Date.now() - now < 50);
+			}, 100, true);
+			fn();
+			fn();
+			setTimeout(() => done(), 200);
+		});
+
+		it('should call function after x milliseconds once', (done) => {
+			let count = 0;
+			const now = Date.now();
+			const fn = utils.throttle(() => {
+				count += 1;
+				assert.strictEqual(count, 1);
+				assert(Date.now() - now > 50);
+			}, 100);
+			fn();
+			fn();
+			setTimeout(() => done(), 200);
+		});
+
+		it('should call function twice if immediate=true', (done) => {
+			let count = 0;
+			const fn = utils.throttle(() => {
+				count += 1;
+			}, 100, true);
+			fn();
+			fn();
+			setTimeout(() => {
+				assert.strictEqual(count, 2);
+				done();
+			}, 200);
+		});
+	});
+
+	describe('Translator', () => {
+		const shim = require('../src/translator');
+
+		const { Translator } = shim;
+		it('should translate in place', async () => {
+			const translator = Translator.create('en-GB');
+			const el = $(`<div><span id="search" title="[[global:search]]"></span><span id="text">[[global:home]]</span></div>`);
+			await translator.translateInPlace(el.get(0));
+			assert.strictEqual(el.find('#text').text(), 'Home');
+			assert.strictEqual(el.find('#search').attr('title'), 'Search');
+		});
+
+		it('should not error', (done) => {
+			shim.flush();
+			shim.flushNamespace();
+			done();
+		});
 	});
 });

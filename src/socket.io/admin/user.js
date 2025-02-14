@@ -4,11 +4,11 @@ const async = require('async');
 const winston = require('winston');
 
 const db = require('../../database');
-const api = require('../../api');
 const groups = require('../../groups');
 const user = require('../../user');
 const events = require('../../events');
 const translator = require('../../translator');
+const utils = require('../../utils');
 const sockets = require('..');
 
 const User = module.exports;
@@ -53,11 +53,6 @@ User.removeAdmins = async function (socket, uids) {
 	}
 };
 
-User.createUser = async function (socket, userData) {
-	sockets.warnDeprecated(socket, 'POST /api/v3/users');
-	return await api.users.create(socket, userData);
-};
-
 User.resetLockouts = async function (socket, uids) {
 	if (!Array.isArray(uids)) {
 		throw new Error('[[error:invalid-data]]');
@@ -71,7 +66,11 @@ User.validateEmail = async function (socket, uids) {
 	}
 
 	for (const uid of uids) {
-		await user.email.confirmByUid(uid);
+		const email = await user.email.getEmailForValidation(uid);
+		if (email) {
+			await user.setUserField(uid, 'email', email);
+		}
+		await user.email.confirmByUid(uid, socket.uid);
 	}
 };
 
@@ -83,7 +82,11 @@ User.sendValidationEmail = async function (socket, uids) {
 	const failed = [];
 	let errorLogged = false;
 	await async.eachLimit(uids, 50, async (uid) => {
-		await user.email.sendValidationEmail(uid, { force: true }).catch((err) => {
+		const email = await user.email.getEmailForValidation(uid);
+		await user.email.sendValidationEmail(uid, {
+			force: true,
+			email: email,
+		}).catch((err) => {
 			if (!errorLogged) {
 				winston.error(`[user.create] Validation email failed to send\n[emailer.send] ${err.stack}`);
 				errorLogged = true;
@@ -126,25 +129,6 @@ User.forcePasswordReset = async function (socket, uids) {
 	uids.forEach(uid => sockets.in(`uid_${uid}`).emit('event:logout'));
 };
 
-User.deleteUsers = async function (socket, uids) {
-	sockets.warnDeprecated(socket, 'DELETE /api/v3/users/:uid/account');
-	await Promise.all(uids.map(async (uid) => {
-		await api.users.deleteAccount(socket, { uid });
-	}));
-};
-
-User.deleteUsersContent = async function (socket, uids) {
-	sockets.warnDeprecated(socket, 'DELETE /api/v3/users/:uid/content');
-	await Promise.all(uids.map(async (uid) => {
-		await api.users.deleteContent(socket, { uid });
-	}));
-};
-
-User.deleteUsersAndContent = async function (socket, uids) {
-	sockets.warnDeprecated(socket, 'DELETE /api/v3/users or DELETE /api/v3/users/:uid');
-	await api.users.deleteMany(socket, { uids });
-};
-
 User.restartJobs = async function () {
 	user.startJobs();
 };
@@ -163,7 +147,22 @@ User.loadGroups = async function (socket, uids) {
 	return { users: userData };
 };
 
-User.exportUsersCSV = async function (socket) {
+User.setReputation = async function (socket, data) {
+	if (!data || !Array.isArray(data.uids) || !utils.isNumber(data.value)) {
+		throw new Error('[[error:invalid-data]]');
+	}
+
+	await Promise.all([
+		db.setObjectBulk(
+			data.uids.map(uid => ([`user:${uid}`, { reputation: parseInt(data.value, 10) }]))
+		),
+		db.sortedSetAddBulk(
+			data.uids.map(uid => (['users:reputation', data.value, uid]))
+		),
+	]);
+};
+
+User.exportUsersCSV = async function (socket, data) {
 	await events.log({
 		type: 'exportUsersCSV',
 		uid: socket.uid,
@@ -171,8 +170,10 @@ User.exportUsersCSV = async function (socket) {
 	});
 	setTimeout(async () => {
 		try {
-			await user.exportUsersCSV();
-			socket.emit('event:export-users-csv');
+			await user.exportUsersCSV(data.fields);
+			if (socket.emit) {
+				socket.emit('event:export-users-csv');
+			}
 			const notifications = require('../../notifications');
 			const n = await notifications.create({
 				bodyShort: '[[notifications:users-csv-exported]]',
@@ -182,7 +183,30 @@ User.exportUsersCSV = async function (socket) {
 			});
 			await notifications.push(n, [socket.uid]);
 		} catch (err) {
-			winston.error(err);
+			winston.error(err.stack);
 		}
 	}, 0);
 };
+
+User.saveCustomFields = async function (socket, fields) {
+	const userFields = await user.getUserFieldWhitelist();
+	for (const field of fields) {
+		if (userFields.includes(field.key) || userFields.includes(field.key.toLowerCase())) {
+			throw new Error(`[[error:invalid-custom-user-field, ${field.key}]]`);
+		}
+	}
+	const keys = await db.getSortedSetRange('user-custom-fields', 0, -1);
+	await db.delete('user-custom-fields');
+	await db.deleteAll(keys.map(k => `user-custom-field:${k}`));
+
+	await db.sortedSetAdd(
+		`user-custom-fields`,
+		fields.map((f, i) => i),
+		fields.map(f => f.key)
+	);
+	await db.setObjectBulk(
+		fields.map(field => [`user-custom-field:${field.key}`, field])
+	);
+	await user.reloadCustomFieldWhitelist();
+};
+

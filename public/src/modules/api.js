@@ -1,90 +1,149 @@
+/* eslint-disable import/no-unresolved */
+
 'use strict';
 
-define('api', ['hooks'], (hooks) => {
-	const api = {};
-	const baseUrl = config.relative_path + '/api/v3';
+import { fire as fireHook } from 'hooks';
+import { confirm } from 'bootbox';
 
-	function call(options, callback) {
-		options.url = options.url.startsWith('/api') ?
-			config.relative_path + options.url :
-			baseUrl + options.url;
+const baseUrl = config.relative_path + '/api/v3';
 
-		async function doAjax(cb) {
-			// Allow options to be modified by plugins, etc.
-			({ options } = await hooks.fire('filter:api.options', { options }));
+async function call(options, callback) {
+	options.url = options.url.startsWith('/api') ?
+		config.relative_path + options.url :
+		baseUrl + options.url;
 
-			$.ajax(options)
-				.done((res) => {
-					cb(null, (
-						res &&
-						res.hasOwnProperty('status') &&
-						res.hasOwnProperty('response') ? res.response : (res || {})
-					));
-				})
-				.fail((ev) => {
-					let errMessage;
-					if (ev.responseJSON) {
-						errMessage = ev.responseJSON.status && ev.responseJSON.status.message ?
-							ev.responseJSON.status.message :
-							ev.responseJSON.error;
-					}
-
-					cb(new Error(errMessage || ev.statusText));
-				});
-		}
-
-		if (typeof callback === 'function') {
-			doAjax(callback);
-			return;
-		}
-
-		return new Promise((resolve, reject) => {
-			doAjax(function (err, data) {
-				if (err) reject(err);
-				else resolve(data);
-			});
-		});
+	if (typeof callback === 'function') {
+		xhr(options).then(result => callback(null, result), err => callback(err));
+		return;
 	}
 
-	api.get = (route, payload, onSuccess) => call({
-		url: route + (Object.keys(payload).length ? ('?' + $.param(payload)) : ''),
-	}, onSuccess);
+	try {
+		const result = await xhr(options);
+		return result;
+	} catch (err) {
+		if (err.message === 'A valid login session was not found. Please log in and try again.') {
+			const { url } = await fireHook('filter:admin.reauth', { url: 'login' });
+			return confirm('[[error:api.reauth-required]]', (ok) => {
+				if (ok) {
+					ajaxify.go(url);
+				}
+			});
+		}
+		throw err;
+	}
+}
 
-	api.head = (route, payload, onSuccess) => call({
-		url: route + (Object.keys(payload).length ? ('?' + $.param(payload)) : ''),
-		method: 'head',
-	}, onSuccess);
+async function xhr(options) {
+	// Normalize body based on type
+	const { url } = options;
+	delete options.url;
 
-	api.post = (route, payload, onSuccess) => call({
+	if (options.data && !(options.data instanceof FormData)) {
+		options.data = JSON.stringify(options.data || {});
+		options.headers['content-type'] = 'application/json; charset=utf-8';
+	}
+
+	// Allow options to be modified by plugins, etc.
+	({ options } = await fireHook('filter:api.options', { options }));
+
+	/**
+	 * Note: pre-v4 backwards compatibility
+	 *
+	 * This module now passes in "data" to xhr().
+	 * This is because the "filter:api.options" hook (and plugins using it) expect "data".
+	 * fetch() expects body, so we rename it here.
+	 *
+	 * In v4, replace all instances of "data" with "body" and record as breaking change.
+	 */
+	if (options.data) {
+		options.body = options.data;
+		delete options.data;
+	}
+
+	const res = await fetch(url, options);
+	const { headers } = res;
+
+	if (headers.get('x-redirect')) {
+		return xhr({ url: headers.get('x-redirect'), ...options });
+	}
+
+	const contentType = headers.get('content-type');
+	const isJSON = contentType && contentType.startsWith('application/json');
+
+	let response;
+	if (options.method !== 'HEAD') {
+		if (isJSON) {
+			response = await res.json();
+		} else {
+			response = await res.text();
+		}
+	}
+
+	if (!res.ok) {
+		if (response) {
+			throw new Error(isJSON ? response.status.message : response);
+		}
+		throw new Error(res.statusText);
+	}
+
+	return isJSON && response && response.hasOwnProperty('status') && response.hasOwnProperty('response') ?
+		response.response :
+		response;
+}
+
+export function get(route, data, onSuccess) {
+	return call({
+		url: route + (data && Object.keys(data).length ? ('?' + $.param(data)) : ''),
+	}, onSuccess);
+}
+
+export function head(route, data, onSuccess) {
+	return call({
+		url: route + (data && Object.keys(data).length ? ('?' + $.param(data)) : ''),
+		method: 'HEAD',
+	}, onSuccess);
+}
+
+export function post(route, data, onSuccess) {
+	return call({
 		url: route,
-		method: 'post',
-		data: JSON.stringify(payload),
-		contentType: 'application/json; charset=utf-8',
+		method: 'POST',
+		data,
 		headers: {
 			'x-csrf-token': config.csrf_token,
 		},
 	}, onSuccess);
+}
 
-	api.put = (route, payload, onSuccess) => call({
+export function patch(route, data, onSuccess) {
+	return call({
 		url: route,
-		method: 'put',
-		data: JSON.stringify(payload),
-		contentType: 'application/json; charset=utf-8',
+		method: 'PATCH',
+		data,
 		headers: {
 			'x-csrf-token': config.csrf_token,
 		},
 	}, onSuccess);
+}
 
-	api.del = (route, payload, onSuccess) => call({
+export function put(route, data, onSuccess) {
+	return call({
 		url: route,
-		method: 'delete',
-		data: JSON.stringify(payload),
-		contentType: 'application/json; charset=utf-8',
+		method: 'PUT',
+		data,
 		headers: {
 			'x-csrf-token': config.csrf_token,
 		},
 	}, onSuccess);
-	api.delete = api.del;
+}
 
-	return api;
-});
+export function del(route, data, onSuccess) {
+	return call({
+		url: route,
+		method: 'DELETE',
+		data,
+		headers: {
+			'x-csrf-token': config.csrf_token,
+		},
+	}, onSuccess);
+}
