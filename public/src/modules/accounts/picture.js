@@ -3,7 +3,9 @@
 define('accounts/picture', [
 	'pictureCropper',
 	'api',
-], (pictureCropper, api) => {
+	'bootbox',
+	'alerts',
+], (pictureCropper, api, bootbox, alerts) => {
 	const Picture = {};
 
 	Picture.openChangeModal = () => {
@@ -11,21 +13,21 @@ define('accounts/picture', [
 			uid: ajaxify.data.uid,
 		}, function (err, pictures) {
 			if (err) {
-				return app.alertError(err.message);
+				return alerts.error(err);
 			}
 
 			// boolean to signify whether an uploaded picture is present in the pictures list
-			var uploaded = pictures.reduce(function (memo, cur) {
+			const uploaded = pictures.reduce(function (memo, cur) {
 				return memo || cur.type === 'uploaded';
 			}, false);
 
-			app.parseAndTranslate('partials/modals/change_picture_modal', {
+			app.parseAndTranslate('modals/change-picture', {
 				pictures: pictures,
 				uploaded: uploaded,
 				icon: { text: ajaxify.data['icon:text'], bgColor: ajaxify.data['icon:bgColor'] },
 				defaultAvatar: ajaxify.data.defaultAvatar,
 				allowProfileImageUploads: ajaxify.data.allowProfileImageUploads,
-				iconBackgrounds: config.iconBackgrounds,
+				iconBackgrounds: ajaxify.data.iconBackgrounds,
 				user: {
 					uid: ajaxify.data.uid,
 					username: ajaxify.data.username,
@@ -34,11 +36,12 @@ define('accounts/picture', [
 					'icon:bgColor': ajaxify.data['icon:bgColor'],
 				},
 			}, function (html) {
-				var modal = bootbox.dialog({
+				const modal = bootbox.dialog({
 					className: 'picture-switcher',
-					title: '[[user:change_picture]]',
+					title: '[[user:change-picture]]',
 					message: html,
 					show: true,
+					size: 'large',
 					buttons: {
 						close: {
 							label: '[[global:close]]',
@@ -46,7 +49,7 @@ define('accounts/picture', [
 							className: 'btn-link',
 						},
 						update: {
-							label: '[[global:save_changes]]',
+							label: '[[global:save-changes]]',
 							callback: saveSelection,
 						},
 					},
@@ -59,7 +62,7 @@ define('accounts/picture', [
 				});
 				modal.on('change', 'input[type="radio"][name="icon:bgColor"]', (e) => {
 					const value = e.target.value;
-					modal.find('.user-icon').css('background-color', value);
+					modal.find('[component="avatar/icon"]').css('background-color', value);
 				});
 
 				handleImageUpload(modal);
@@ -67,7 +70,7 @@ define('accounts/picture', [
 				function updateImages() {
 					// Check to see which one is the active picture
 					if (!ajaxify.data.picture) {
-						modal.find('.list-group-item .user-icon').parents('.list-group-item').addClass('active');
+						modal.find('[data-type="default"]').addClass('active');
 					} else {
 						modal.find('.list-group-item img').each(function () {
 							if (this.getAttribute('src') === ajaxify.data.picture) {
@@ -87,13 +90,16 @@ define('accounts/picture', [
 				}
 
 				function saveSelection() {
-					var type = modal.find('.list-group-item.active').attr('data-type');
+					const type = modal.find('.list-group-item.active').attr('data-type');
 					const iconBgColor = document.querySelector('.modal.picture-switcher input[type="radio"]:checked').value || 'transparent';
 
 					changeUserPicture(type, iconBgColor).then(() => {
-						Picture.updateHeader(type === 'default' ? '' : modal.find('.list-group-item.active img').attr('src'), iconBgColor);
+						Picture.updateHeader(
+							type === 'default' ? '' : modal.find('.list-group-item.active img').attr('src'),
+							iconBgColor
+						);
 						ajaxify.refresh();
-					}).catch(app.alertError);
+					}).catch(alerts.error);
 				}
 
 				function onCloseModal() {
@@ -110,31 +116,43 @@ define('accounts/picture', [
 		if (!picture && ajaxify.data.defaultAvatar) {
 			picture = ajaxify.data.defaultAvatar;
 		}
-		$('#header [component="avatar/picture"]')[picture ? 'show' : 'hide']();
-		$('#header [component="avatar/icon"]')[!picture ? 'show' : 'hide']();
+		const headerPictureEl = $(`[component="header/avatar"] [component="avatar/picture"]`);
+		const headerIconEl = $(`[component="header/avatar"] [component="avatar/icon"]`);
+
 		if (picture) {
-			$('#header [component="avatar/picture"]').attr('src', picture);
+			if (!headerPictureEl.length && headerIconEl.length) {
+				const img = $('<img/>');
+				$(headerIconEl[0].attributes).each(function () {
+					img.attr(this.nodeName, this.nodeValue);
+				});
+				img.attr('component', 'avatar/picture')
+					.attr('src', picture)
+					.insertBefore(headerIconEl);
+			}
+		} else {
+			headerPictureEl.remove();
 		}
 
 		if (iconBgColor) {
-			document.querySelectorAll('[component="navbar"] [component="avatar/icon"]').forEach((el) => {
-				el.style['background-color'] = iconBgColor;
+			headerIconEl.css({
+				'background-color': iconBgColor,
 			});
 		}
 	};
 
 	function handleImageUpload(modal) {
 		function onUploadComplete(urlOnServer) {
-			urlOnServer = (!urlOnServer.startsWith('http') ? config.relative_path : '') + urlOnServer + '?' + Date.now();
-
-			Picture.updateHeader(urlOnServer);
+			urlOnServer = (!urlOnServer.startsWith('http') ? config.relative_path : '') + urlOnServer;
+			const cacheBustedUrl = urlOnServer + '?' + Date.now();
+			Picture.updateHeader(cacheBustedUrl);
 
 			if (ajaxify.data.picture && ajaxify.data.picture.length) {
-				$('#user-current-picture, img.avatar').attr('src', urlOnServer);
+				$(`#user-current-picture, img[data-uid="${ajaxify.data.theirid}"].avatar`).attr('src', cacheBustedUrl);
 				ajaxify.data.uploadedpicture = urlOnServer;
+				ajaxify.data.picture = urlOnServer;
 			} else {
 				ajaxify.refresh(function () {
-					$('#user-current-picture, img.avatar').attr('src', urlOnServer);
+					$(`#user-current-picture, img[data-uid="${ajaxify.data.theirid}"].avatar`).attr('src', cacheBustedUrl);
 				});
 			}
 		}
@@ -157,8 +175,8 @@ define('accounts/picture', [
 				paramValue: ajaxify.data.theirid,
 				fileSize: ajaxify.data.maximumProfileImageSize,
 				allowSkippingCrop: false,
-				title: '[[user:upload_picture]]',
-				description: '[[user:upload_a_picture]]',
+				title: '[[user:upload-picture]]',
+				description: '[[user:upload-a-picture]]',
 				accept: ajaxify.data.allowedProfileImageExtensions,
 			}, function (url) {
 				onUploadComplete(url);
@@ -169,11 +187,11 @@ define('accounts/picture', [
 
 		modal.find('[data-action="upload-url"]').on('click', function () {
 			modal.modal('hide');
-			app.parseAndTranslate('partials/modals/upload_picture_from_url_modal', {}, function (uploadModal) {
+			app.parseAndTranslate('modals/upload-picture-from-url', {}, function (uploadModal) {
 				uploadModal.modal('show');
 
 				uploadModal.find('.upload-btn').on('click', function () {
-					var url = uploadModal.find('#uploadFromUrl').val();
+					const url = uploadModal.find('#uploadFromUrl').val();
 					if (!url) {
 						return false;
 					}
@@ -202,7 +220,7 @@ define('accounts/picture', [
 			}, function (err) {
 				modal.modal('hide');
 				if (err) {
-					return app.alertError(err.message);
+					return alerts.error(err);
 				}
 				onRemoveComplete();
 			});

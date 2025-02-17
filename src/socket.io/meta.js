@@ -1,12 +1,14 @@
 'use strict';
 
+const os = require('os');
 
 const user = require('../user');
+const meta = require('../meta');
 const topics = require('../topics');
+const privileges = require('../privileges');
 
-const SocketMeta = {
-	rooms: {},
-};
+const SocketMeta = module.exports;
+SocketMeta.rooms = {};
 
 SocketMeta.reconnected = function (socket, data, callback) {
 	callback = callback || function () {};
@@ -14,18 +16,21 @@ SocketMeta.reconnected = function (socket, data, callback) {
 		topics.pushUnreadCount(socket.uid);
 		user.notifications.pushCount(socket.uid);
 	}
-	callback();
+	callback(null, {
+		'cache-buster': meta.config['cache-buster'],
+		hostname: os.hostname(),
+	});
 };
 
 /* Rooms */
 
-SocketMeta.rooms.enter = function (socket, data, callback) {
+SocketMeta.rooms.enter = async function (socket, data) {
 	if (!socket.uid) {
-		return callback();
+		return;
 	}
 
 	if (!data) {
-		return callback(new Error('[[error:invalid-data]]'));
+		throw new Error('[[error:invalid-data]]');
 	}
 
 	if (data.enter) {
@@ -33,7 +38,25 @@ SocketMeta.rooms.enter = function (socket, data, callback) {
 	}
 
 	if (data.enter && data.enter.startsWith('uid_') && data.enter !== `uid_${socket.uid}`) {
-		return callback(new Error('[[error:not-allowed]]'));
+		throw new Error('[[error:not-allowed]]');
+	}
+
+	if (data.enter && data.enter.startsWith('chat_')) {
+		throw new Error('[[error:not-allowed]]');
+	}
+
+	if (data.enter && data.enter.startsWith('topic_')) {
+		const tid = data.enter.split('_').pop();
+		if (!await privileges.topics.can('topics:read', tid, socket.uid)) {
+			throw new Error('[[error:no-privileges]]');
+		}
+	}
+
+	if (data.enter && data.enter.startsWith('category_')) {
+		const cid = data.enter.split('_').pop();
+		if (!await privileges.categories.can('read', cid, socket.uid)) {
+			throw new Error('[[error:no-privileges]]');
+		}
 	}
 
 	leaveCurrentRoom(socket);
@@ -42,15 +65,13 @@ SocketMeta.rooms.enter = function (socket, data, callback) {
 		socket.join(data.enter);
 		socket.currentRoom = data.enter;
 	}
-	callback();
 };
 
-SocketMeta.rooms.leaveCurrent = function (socket, data, callback) {
+SocketMeta.rooms.leaveCurrent = async function (socket) {
 	if (!socket.uid || !socket.currentRoom) {
-		return callback();
+		return;
 	}
 	leaveCurrentRoom(socket);
-	callback();
 };
 
 function leaveCurrentRoom(socket) {
@@ -60,4 +81,4 @@ function leaveCurrentRoom(socket) {
 	}
 }
 
-module.exports = SocketMeta;
+require('../promisify')(SocketMeta);

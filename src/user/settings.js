@@ -5,14 +5,26 @@ const validator = require('validator');
 
 const meta = require('../meta');
 const db = require('../database');
+const activitypub = require('../activitypub');
 const plugins = require('../plugins');
 const notifications = require('../notifications');
 const languages = require('../languages');
 
 module.exports = function (User) {
+	const spiderDefaultSettings = {
+		usePagination: 1,
+		topicPostSort: 'oldest_to_newest',
+		postsPerPage: 20,
+		topicsPerPage: 20,
+	};
+	const remoteDefaultSettings = Object.freeze({
+		categoryWatchState: 'notwatching',
+	});
+
 	User.getSettings = async function (uid) {
 		if (parseInt(uid, 10) <= 0) {
-			return await onSettingsLoaded(0, {});
+			const isSpider = parseInt(uid, 10) === -1;
+			return await onSettingsLoaded(uid, isSpider ? spiderDefaultSettings : {});
 		}
 		let settings = await db.getObject(`user:${uid}:settings`);
 		settings = settings || {};
@@ -60,7 +72,7 @@ module.exports = function (User) {
 		settings.userLang = settings.userLang || meta.config.defaultLang || 'en-GB';
 		settings.acpLang = settings.acpLang || settings.userLang;
 		settings.topicPostSort = getSetting(settings, 'topicPostSort', 'oldest_to_newest');
-		settings.categoryTopicSort = getSetting(settings, 'categoryTopicSort', 'newest_to_oldest');
+		settings.categoryTopicSort = getSetting(settings, 'categoryTopicSort', 'recently_replied');
 		settings.followTopicsOnCreate = parseInt(getSetting(settings, 'followTopicsOnCreate', 1), 10) === 1;
 		settings.followTopicsOnReply = parseInt(getSetting(settings, 'followTopicsOnReply', 0), 10) === 1;
 		settings.upvoteNotifFreq = getSetting(settings, 'upvoteNotifFreq', 'all');
@@ -83,6 +95,8 @@ module.exports = function (User) {
 	function getSetting(settings, key, defaultValue) {
 		if (settings[key] || settings[key] === 0) {
 			return settings[key];
+		} else if (activitypub.helpers.isUri(settings.uid) && remoteDefaultSettings[key]) {
+			return remoteDefaultSettings[key];
 		} else if (meta.config[key] || meta.config[key] === 0) {
 			return meta.config[key];
 		}
@@ -156,7 +170,7 @@ module.exports = function (User) {
 
 	User.updateDigestSetting = async function (uid, dailyDigestFreq) {
 		await db.sortedSetsRemove(['digest:day:uids', 'digest:week:uids', 'digest:month:uids'], uid);
-		if (['day', 'week', 'month'].includes(dailyDigestFreq)) {
+		if (['day', 'week', 'biweek', 'month'].includes(dailyDigestFreq)) {
 			await db.sortedSetAdd(`digest:${dailyDigestFreq}:uids`, Date.now(), uid);
 		}
 	};

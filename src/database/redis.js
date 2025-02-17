@@ -2,7 +2,6 @@
 
 const nconf = require('nconf');
 const semver = require('semver');
-const session = require('express-session');
 
 const connection = require('./redis/connection');
 
@@ -12,37 +11,37 @@ redisModule.questions = [
 	{
 		name: 'redis:host',
 		description: 'Host IP or address of your Redis instance',
-		default: nconf.get('redis:host') || '127.0.0.1',
+		default: nconf.get('redis:host') || nconf.get('defaults:redis:host') || '127.0.0.1',
 	},
 	{
 		name: 'redis:port',
 		description: 'Host port of your Redis instance',
-		default: nconf.get('redis:port') || 6379,
+		default: nconf.get('redis:port') || nconf.get('defaults:redis:port') || 6379,
 	},
 	{
 		name: 'redis:password',
 		description: 'Password of your Redis database',
 		hidden: true,
-		default: nconf.get('redis:password') || '',
+		default: nconf.get('redis:password') || nconf.get('defaults:redis:password') || '',
 		before: function (value) { value = value || nconf.get('redis:password') || ''; return value; },
 	},
 	{
 		name: 'redis:database',
 		description: 'Which database to use (0..n)',
-		default: nconf.get('redis:database') || 0,
+		default: nconf.get('redis:database') || nconf.get('defaults:redis:database') || 0,
 	},
 ];
 
 
-redisModule.init = async function () {
-	redisModule.client = await connection.connect(nconf.get('redis'));
+redisModule.init = async function (opts) {
+	redisModule.client = await connection.connect(opts || nconf.get('redis'));
 };
 
 redisModule.createSessionStore = async function (options) {
 	const meta = require('../meta');
-	const sessionStore = require('connect-redis')(session);
+	const { RedisStore } = require('connect-redis');
 	const client = await connection.connect(options);
-	const store = new sessionStore({
+	const store = new RedisStore({
 		client: client,
 		ttl: meta.getSessionTTLSeconds(),
 	});
@@ -63,6 +62,9 @@ redisModule.checkCompatibilityVersion = function (version, callback) {
 
 redisModule.close = async function () {
 	await redisModule.client.quit();
+	if (redisModule.objectCache) {
+		redisModule.objectCache.reset();
+	}
 };
 
 redisModule.info = async function (cxn) {

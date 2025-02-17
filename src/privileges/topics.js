@@ -9,6 +9,7 @@ const user = require('../user');
 const helpers = require('./helpers');
 const categories = require('../categories');
 const plugins = require('../plugins');
+const utils = require('../utils');
 const privsCategories = require('./categories');
 
 const privsTopics = module.exports;
@@ -19,6 +20,7 @@ privsTopics.get = async function (tid, uid) {
 	const privs = [
 		'topics:reply', 'topics:read', 'topics:schedule', 'topics:tag',
 		'topics:delete', 'posts:edit', 'posts:history',
+		'posts:upvote', 'posts:downvote',
 		'posts:delete', 'posts:view_deleted', 'read', 'purge',
 	];
 	const topicData = await topics.getTopicFields(tid, ['cid', 'uid', 'locked', 'deleted', 'scheduled']);
@@ -43,6 +45,8 @@ privsTopics.get = async function (tid, uid) {
 		'topics:delete': (privData['topics:delete'] && (isOwner || isModerator)) || isAdministrator,
 		'posts:edit': (privData['posts:edit'] && (!topicData.locked || isModerator)) || isAdministrator,
 		'posts:history': privData['posts:history'] || isAdministrator,
+		'posts:upvote': privData['posts:upvote'] || isAdministrator,
+		'posts:downvote': privData['posts:downvote'] || isAdministrator,
 		'posts:delete': (privData['posts:delete'] && (!topicData.locked || isModerator)) || isAdministrator,
 		'posts:view_deleted': privData['posts:view_deleted'] || isAdministrator,
 		read: privData.read || isAdministrator,
@@ -120,12 +124,18 @@ privsTopics.filterUids = async function (privilege, tid, uids) {
 
 privsTopics.canPurge = async function (tid, uid) {
 	const cid = await topics.getTopicField(tid, 'cid');
-	const [purge, owner, isAdmin, isModerator] = await Promise.all([
+	let [purge, owner, isAdmin, isModerator] = await Promise.all([
 		privsCategories.isUserAllowedTo('purge', cid, uid),
 		topics.isOwner(tid, uid),
 		user.isAdministrator(uid),
 		user.isModerator(uid, cid),
 	]);
+
+	// Allow remote posts to purge themselves (as:Delete received)
+	if (!utils.isNumber(tid) && owner) {
+		purge = true;
+	}
+
 	return (purge && (owner || isModerator)) || isAdmin;
 };
 
