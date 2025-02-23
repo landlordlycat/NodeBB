@@ -13,7 +13,7 @@ const events = require('../events');
 exports.setDefaultPostData = function (reqOrSocket, data) {
 	data.uid = reqOrSocket.uid;
 	data.req = exports.buildReqObject(reqOrSocket, { ...data });
-	data.timestamp = parseInt(data.timestamp, 10) || Date.now();
+	data.timestamp = Date.now();
 	data.fromQueue = false;
 };
 
@@ -21,6 +21,7 @@ exports.setDefaultPostData = function (reqOrSocket, data) {
 exports.buildReqObject = (req, payload) => {
 	req = req || {};
 	const headers = req.headers || (req.request && req.request.headers) || {};
+	const session = req.session || (req.request && req.request.session) || {};
 	const encrypted = req.connection ? !!req.connection.encrypted : false;
 	let { host } = headers;
 	const referer = headers.referer || '';
@@ -34,13 +35,15 @@ exports.buildReqObject = (req, payload) => {
 		params: req.params,
 		method: req.method,
 		body: payload || req.body,
-		session: req.session,
+		session: session,
 		ip: req.ip,
 		host: host,
 		protocol: encrypted ? 'https' : 'http',
 		secure: encrypted,
 		url: referer,
-		path: referer.substr(referer.indexOf(host) + host.length),
+		path: referer.slice(referer.indexOf(host) + host.length),
+		baseUrl: req.baseUrl,
+		originalUrl: req.originalUrl,
 		headers: headers,
 	};
 };
@@ -50,8 +53,8 @@ exports.doTopicAction = async function (action, event, caller, { tids }) {
 		throw new Error('[[error:invalid-tid]]');
 	}
 
-	const exists = (await Promise.all(tids.map(async tid => await topics.exists(tid)))).every(Boolean);
-	if (!exists) {
+	const exists = await topics.exists(tids);
+	if (!exists.every(Boolean)) {
 		throw new Error('[[error:no-topic]]');
 	}
 
@@ -95,7 +98,7 @@ exports.postCommand = async function (caller, command, eventName, notification, 
 	}
 
 	if (!data.room_id) {
-		throw new Error(`[[error:invalid-room-id, ${data.room_id} ]]`);
+		throw new Error(`[[error:invalid-room-id, ${data.room_id}]]`);
 	}
 	const [exists, deleted] = await Promise.all([
 		posts.exists(data.pid),
@@ -126,6 +129,7 @@ exports.postCommand = async function (caller, command, eventName, notification, 
 };
 
 async function executeCommand(caller, command, eventName, notification, data) {
+	const api = require('.');
 	const result = await posts[command](data.pid, caller.uid);
 	if (result && eventName) {
 		websockets.in(`uid_${caller.uid}`).emit(`posts.${command}`, result);
@@ -133,10 +137,12 @@ async function executeCommand(caller, command, eventName, notification, data) {
 	}
 	if (result && command === 'upvote') {
 		socketHelpers.upvote(result, notification);
+		api.activitypub.like.note(caller, { pid: data.pid });
 	} else if (result && notification) {
 		socketHelpers.sendNotificationToPostOwner(data.pid, caller.uid, command, notification);
 	} else if (result && command === 'unvote') {
 		socketHelpers.rescindUpvoteNotification(data.pid, caller.uid);
+		api.activitypub.undo.like(caller, { pid: data.pid });
 	}
 	return result;
 }

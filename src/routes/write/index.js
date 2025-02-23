@@ -6,6 +6,7 @@ const plugins = require('../../plugins');
 const middleware = require('../../middleware');
 const writeControllers = require('../../controllers/write');
 const helpers = require('../../controllers/helpers');
+const { setupApiRoute } = require('../helpers');
 
 const Write = module.exports;
 
@@ -36,14 +37,17 @@ Write.reload = async (params) => {
 	router.use('/api/v3/groups', require('./groups')());
 	router.use('/api/v3/categories', require('./categories')());
 	router.use('/api/v3/topics', require('./topics')());
+	router.use('/api/v3/tags', require('./tags')());
 	router.use('/api/v3/posts', require('./posts')());
+	router.use('/api/v3/chats', require('./chats')());
 	router.use('/api/v3/flags', require('./flags')());
+	router.use('/api/v3/search', require('./search')());
 	router.use('/api/v3/admin', require('./admin')());
 	router.use('/api/v3/files', require('./files')());
 	router.use('/api/v3/utilities', require('./utilities')());
 
-	router.get('/api/v3/ping', writeControllers.utilities.ping.get);
-	router.post('/api/v3/ping', middleware.authenticateRequest, middleware.ensureLoggedIn, writeControllers.utilities.ping.post);
+	setupApiRoute(router, 'get', '/api/v3/ping', writeControllers.utilities.ping.get);
+	setupApiRoute(router, 'post', '/api/v3/ping', writeControllers.utilities.ping.post);
 
 	/**
 	 * Plugins can add routes to the Write API by attaching a listener to the

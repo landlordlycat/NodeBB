@@ -1,12 +1,17 @@
 'use strict';
 
 
-define('forum/topic/move', ['categorySelector', 'alerts', 'hooks'], function (categorySelector, alerts, hooks) {
-	var Move = {};
-	var modal;
-	var selectedCategory;
+define('forum/topic/move', [
+	'categorySelector', 'alerts', 'hooks',
+], function (categorySelector, alerts, hooks) {
+	const Move = {};
+	let modal;
+	let selectedCategory;
 
 	Move.init = function (tids, currentCid, onComplete) {
+		if (modal) {
+			return;
+		}
 		Move.tids = tids;
 		Move.currentCid = currentCid;
 		Move.onComplete = onComplete;
@@ -16,26 +21,23 @@ define('forum/topic/move', ['categorySelector', 'alerts', 'hooks'], function (ca
 	};
 
 	function showModal() {
-		app.parseAndTranslate('partials/move_thread_modal', {}, function (html) {
+		app.parseAndTranslate('modals/move-topic', {}, function (html) {
 			modal = html;
-			modal.on('hidden.bs.modal', function () {
-				modal.remove();
-			});
-
-			modal.find('#move-confirm').addClass('hide');
+			$('body').append(modal);
 
 			if (Move.moveAll || (Move.tids && Move.tids.length > 1)) {
-				modal.find('.modal-header h3').translateText('[[topic:move_topics]]');
+				modal.find('.card-header').translateText('[[topic:move-topics]]');
 			}
+			const dropdownEl = modal.find('[component="category-selector"]');
+			dropdownEl.addClass('dropup');
 
-			categorySelector.init(modal.find('[component="category-selector"]'), {
+			categorySelector.init(dropdownEl, {
 				onSelect: onCategorySelected,
 				privilege: 'moderate',
 			});
 
 			modal.find('#move_thread_commit').on('click', onCommitClicked);
-
-			modal.modal('show');
+			modal.find('#move_topic_cancel').on('click', closeMoveModal);
 		});
 	}
 
@@ -45,19 +47,18 @@ define('forum/topic/move', ['categorySelector', 'alerts', 'hooks'], function (ca
 	}
 
 	function onCommitClicked() {
-		var commitEl = modal.find('#move_thread_commit');
+		const commitEl = modal.find('#move_thread_commit');
 
 		if (!commitEl.prop('disabled') && selectedCategory && selectedCategory.cid) {
 			commitEl.prop('disabled', true);
-
-			modal.modal('hide');
-			var message = '[[topic:topic_move_success, ' + selectedCategory.name + ']]';
+			closeMoveModal();
+			let message = '[[topic:topic-move-success, ' + selectedCategory.name + ']]';
 			if (Move.tids && Move.tids.length > 1) {
-				message = '[[topic:topic_move_multiple_success, ' + selectedCategory.name + ']]';
+				message = '[[topic:topic-move-multiple-success, ' + selectedCategory.name + ']]';
 			} else if (!Move.tids) {
-				message = '[[topic:topic_move_all_success, ' + selectedCategory.name + ']]';
+				message = '[[topic:topic-move-all-success, ' + selectedCategory.name + ']]';
 			}
-			var data = {
+			const data = {
 				tids: Move.tids ? Move.tids.slice() : null,
 				cid: selectedCategory.cid,
 				currentCid: Move.currentCid,
@@ -66,7 +67,7 @@ define('forum/topic/move', ['categorySelector', 'alerts', 'hooks'], function (ca
 			if (config.undoTimeout > 0) {
 				return alerts.alert({
 					alert_id: 'tids_move_' + (Move.tids ? Move.tids.join('-') : 'all'),
-					title: '[[topic:thread_tools.move]]',
+					title: '[[topic:thread-tools.move]]',
 					message: message,
 					type: 'success',
 					timeout: config.undoTimeout,
@@ -75,7 +76,7 @@ define('forum/topic/move', ['categorySelector', 'alerts', 'hooks'], function (ca
 					},
 					clickfn: function (alert, params) {
 						delete params.timeoutfn;
-						app.alertSuccess('[[topic:topic_move_undone]]');
+						alerts.success('[[topic:topic-move-undone]]');
 					},
 				});
 			}
@@ -89,13 +90,20 @@ define('forum/topic/move', ['categorySelector', 'alerts', 'hooks'], function (ca
 
 		socket.emit(!data.tids ? 'topics.moveAll' : 'topics.move', data, function (err) {
 			if (err) {
-				return app.alertError(err.message);
+				return alerts.error(err);
 			}
 
 			if (typeof data.onComplete === 'function') {
 				data.onComplete();
 			}
 		});
+	}
+
+	function closeMoveModal() {
+		if (modal) {
+			modal.remove();
+			modal = null;
+		}
 	}
 
 	return Move;

@@ -1,8 +1,11 @@
 {
+    "manage-admins-and-mods": "Manage Admins & Mods",
     "administrators": "Správci",
     "global-moderators": "Hlavní moderátoři",
+    "moderators": "Moderators",
     "no-global-moderators": "Žádní hlavní moderátoři",
-    "moderators-of-category": "%1 moderátorů",
+    "no-sub-categories": "No subcategories",
+    "view-children": "View children (%1)",
     "no-moderators": "Žádní moderátoři",
     "add-administrator": "Přidat správce",
     "add-global-moderator": "Přidat hlavního moderátora",

@@ -1,58 +1,84 @@
 'use strict';
 
 
-define('admin/settings', ['uploader', 'mousetrap', 'hooks'], function (uploader, mousetrap, hooks) {
-	var Settings = {};
+define('admin/settings', [
+	'uploader', 'mousetrap', 'hooks', 'alerts', 'settings', 'bootstrap',
+], function (uploader, mousetrap, hooks, alerts, settings, bootstrap) {
+	const Settings = {};
 
 	Settings.populateTOC = function () {
-		var headers = $('.settings-header');
+		const headers = $('.settings-header');
+		const tocEl = $('[component="settings/toc"]');
+		const tocList = $('[component="settings/toc/list"]');
+		const mainHader = $('[component="settings/main/header"]');
 
-		if (headers.length > 1) {
-			headers.each(function () {
-				var header = $(this).text();
-				var anchor = header.toLowerCase().replace(/ /g, '-').trim();
-
-				$(this).prepend('<a name="' + anchor + '"></a>');
-				$('.section-content ul').append('<li><a href="#' + anchor + '">' + header + '</a></li>');
+		if (headers.length > 1 && tocList.length) {
+			headers.each(function (i) {
+				const $this = $(this);
+				const header = $this.text();
+				const anchor = $this.parent().attr('id') || `section${i + 1}`;
+				// for elements that don't have id use section{index}
+				if (anchor.startsWith('section')) {
+					$this.parent().attr('id', anchor);
+				}
+				tocList.append(`<a class="btn btn-ghost btn-sm text-xs text-start text-decoration-none" href="#${anchor}">${header}</a>`);
+			});
+			const offset = mainHader.outerHeight(true);
+			// https://stackoverflow.com/a/11814275/583363
+			tocList.find('a').on('click', function (event) {
+				event.preventDefault();
+				const href = $(this).attr('href');
+				$(href)[0].scrollIntoView();
+				window.location.hash = href;
+				scrollBy(0, -offset);
+				setTimeout(() => {
+					tocList.find('a').removeClass('active');
+					$(this).addClass('active');
+				}, 10);
+				return false;
 			});
 
-			var scrollTo = $('a[name="' + window.location.hash.replace('#', '') + '"]');
+			new bootstrap.ScrollSpy($('#spy-container')[0], {
+				target: '#settings-navbar',
+				rootMargin: '-10% 0px -70%',
+				smoothScroll: true,
+			});
+
+			const scrollTo = $(`${window.location.hash}`);
 			if (scrollTo.length) {
 				$('html, body').animate({
-					scrollTop: (scrollTo.offset().top) + 'px',
+					scrollTop: (scrollTo.offset().top - offset) + 'px',
 				}, 400);
 			}
-		} else {
-			$('.content-header').parents('.row').remove();
+			tocEl.removeClass('hidden');
 		}
 	};
 
 	Settings.prepare = function (callback) {
 		// Populate the fields on the page from the config
-		var fields = $('#content [data-field]');
-		var	numFields = fields.length;
-		var	saveBtn = $('#save');
-		var	revertBtn = $('#revert');
-		var	x;
-		var key;
-		var inputType;
-		var field;
+		const fields = $('#content [data-field]');
+		const numFields = fields.length;
+		const saveBtn = $('#save');
+		const revertBtn = $('#revert');
+		let x;
+		let key;
+		let inputType;
+		let field;
 
 		// Handle unsaved changes
 		fields.on('change', function () {
 			app.flags = app.flags || {};
 			app.flags._unsaved = true;
 		});
-		var defaultInputs = ['text', 'hidden', 'password', 'textarea', 'number'];
+		const defaultInputs = ['text', 'hidden', 'password', 'textarea', 'number'];
 		for (x = 0; x < numFields; x += 1) {
 			field = fields.eq(x);
 			key = field.attr('data-field');
 			inputType = field.attr('type');
 			if (app.config.hasOwnProperty(key)) {
 				if (field.is('input') && inputType === 'checkbox') {
-					var checked = parseInt(app.config[key], 10) === 1;
+					const checked = parseInt(app.config[key], 10) === 1;
 					field.prop('checked', checked);
-					field.parents('.mdl-switch').toggleClass('is-checked', checked);
 				} else if (field.is('textarea') || field.is('select') || (field.is('input') && defaultInputs.indexOf(inputType) !== -1)) {
 					field.val(app.config[key]);
 				}
@@ -66,27 +92,24 @@ define('admin/settings', ['uploader', 'mousetrap', 'hooks'], function (uploader,
 		saveBtn.off('click').on('click', function (e) {
 			e.preventDefault();
 
+			const ok = settings.check(document.querySelectorAll('#content [data-field]'));
+			if (!ok) {
+				return;
+			}
+
 			saveFields(fields, function onFieldsSaved(err) {
 				if (err) {
-					return app.alert({
+					return alerts.alert({
 						alert_id: 'config_status',
 						timeout: 2500,
-						title: 'Changes Not Saved',
-						message: 'NodeBB encountered a problem saving your changes. (' + err.message + ')',
+						title: '[[admin/admin:changes-not-saved]]',
+						message: `[[admin/admin:changes-not-saved-message, ${err.message}]]`,
 						type: 'danger',
 					});
 				}
 
 				app.flags._unsaved = false;
-
-				app.alert({
-					alert_id: 'config_status',
-					timeout: 2500,
-					title: 'Changes Saved',
-					message: 'Your changes to the NodeBB configuration have been saved.',
-					type: 'success',
-				});
-
+				Settings.toggleSaveSuccess(saveBtn);
 				hooks.fire('action:admin.settingsSaved');
 			});
 		});
@@ -101,7 +124,7 @@ define('admin/settings', ['uploader', 'mousetrap', 'hooks'], function (uploader,
 
 		$('#clear-sitemap-cache').off('click').on('click', function () {
 			socket.emit('admin.settings.clearSitemapCache', function () {
-				app.alertSuccess('Sitemap Cache Cleared!');
+				alerts.success('Sitemap Cache Cleared!');
 			});
 			return false;
 		});
@@ -115,9 +138,19 @@ define('admin/settings', ['uploader', 'mousetrap', 'hooks'], function (uploader,
 		}, 0);
 	};
 
+	Settings.toggleSaveSuccess = function (saveBtn) {
+		const saveBtnEl = saveBtn.get(0);
+		if (saveBtnEl) {
+			saveBtnEl.classList.toggle('saved', true);
+			setTimeout(() => {
+				saveBtnEl.classList.toggle('saved', false);
+			}, 1500);
+		}
+	};
+
 	function handleUploads() {
 		$('#content input[data-action="upload"]').each(function () {
-			var uploadBtn = $(this);
+			const uploadBtn = $(this);
 			uploadBtn.on('click', function () {
 				uploader.show({
 					title: uploadBtn.attr('data-title'),
@@ -135,6 +168,7 @@ define('admin/settings', ['uploader', 'mousetrap', 'hooks'], function (uploader,
 
 	function setupTagsInput() {
 		$('[data-field-type="tagsinput"]').tagsinput({
+			tagClass: 'badge bg-info',
 			confirmKeys: [13, 44],
 			trimValue: true,
 		});
@@ -146,13 +180,13 @@ define('admin/settings', ['uploader', 'mousetrap', 'hooks'], function (uploader,
 	};
 
 	function saveFields(fields, callback) {
-		var data = {};
+		const data = {};
 
 		fields.each(function () {
-			var field = $(this);
-			var key = field.attr('data-field');
-			var value;
-			var inputType;
+			const field = $(this);
+			const key = field.attr('data-field');
+			let value;
+			let inputType;
 
 			if (field.is('input')) {
 				inputType = field.attr('type');
@@ -181,7 +215,7 @@ define('admin/settings', ['uploader', 'mousetrap', 'hooks'], function (uploader,
 				return callback(err);
 			}
 
-			for (var field in data) {
+			for (const field in data) {
 				if (data.hasOwnProperty(field)) {
 					app.config[field] = data[field];
 				}

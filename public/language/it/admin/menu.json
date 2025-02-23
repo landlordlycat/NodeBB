@@ -1,9 +1,10 @@
 {
-	"section-dashboard": "Dashboard",
+	"section-dashboard": "Cruscotti",
 	"dashboard/overview": "Panoramica",
 	"dashboard/logins": "Accessi",
 	"dashboard/users": "Utenti",
 	"dashboard/topics": "Discussioni",
+	"dashboard/searches": "Ricerche",
 	"section-general": "Generale",
 
 	"section-manage": "Gestisci",
@@ -12,11 +13,12 @@
 	"manage/tags": "Tabs",
 	"manage/users": "Utenti",
 	"manage/admins-mods": "Amministratori e Moderatori",
-	"manage/registration": "Attesa di registrazione",
-	"manage/post-queue": "Post in attesa",
+	"manage/registration": "Coda di registrazione",
+	"manage/flagged-content": "Contenuti Segnalati",
+	"manage/post-queue": "Coda post",
 	"manage/groups": "Gruppi",
 	"manage/ip-blacklist": "Lista degli IP bloccati",
-	"manage/uploads": "Uploads",
+	"manage/uploads": "Caricamenti",
 	"manage/digest": "Riepilogo",
 
 	"section-settings": "Impostazioni",
@@ -28,14 +30,15 @@
 	"settings/user": "Utenti",
 	"settings/group": "Gruppi",
 	"settings/guest": "Ospiti",
-	"settings/uploads": "Uploads",
+	"settings/uploads": "Caricamenti",
 	"settings/languages": "Lingue",
 	"settings/post": "Post",
 	"settings/chat": "Chat",
 	"settings/pagination": "Paginazione",
-	"settings/tags": "Tabs",
+	"settings/tags": "Tag",
 	"settings/notifications": "Notifiche",
 	"settings/api": "Accesso API",
+	"settings/activitypub": "Federazione (ActivityPub)",
 	"settings/sounds": "Suoni",
 	"settings/social": "Social",
 	"settings/cookies": "Cookies",
@@ -47,7 +50,7 @@
 
 	"section-appearance": "Stile",
 	"appearance/themes": "Themi",
-	"appearance/skins": "Skins",
+	"appearance/skins": "Skin",
 	"appearance/customise": "Contenuto Personalizato (HTML/JS/CSS)",
 
 	"section-extend": "Estendere",
@@ -57,7 +60,7 @@
 
 	"section-social-auth": "Autenticazione Social",
 
-	"section-plugins": "Plugins",
+	"section-plugins": "Plugin",
 	"extend/plugins.install": "Installazione Plugin",
 
 	"section-advanced": "Avanzato",
@@ -71,11 +74,13 @@
 	"development/info": "Informazioni",
 
 	"rebuild-and-restart-forum": "Rebuild & Riavvia Forum",
+	"rebuild-and-restart": "Ricostruisci e riavvia",
 	"restart-forum": "Riavvia Forum",
+	"restart": "Riavvio",
 	"logout": "Esci",
 	"view-forum": "Vista Forum",
 
-	"search.placeholder": "Premi &quot;/&quot; per cercare le impostazioni",
+	"search.placeholder": "Impostazioni di ricerca",
 	"search.no-results": "Niente risultati...",
 	"search.search-forum": "Cerca nel forum per <strong></strong>",
 	"search.keep-typing": "Scrivi altro per vedere risultati...",

@@ -35,6 +35,9 @@ TopicObject:
             uid:
               type: number
               description: A user identifier
+            isLocal:
+              type: boolean
+              description: Whether the user belongs to the local installation or not.
             username:
               type: string
               description: A friendly name for a given user account
@@ -156,6 +159,8 @@ TopicObject:
           type: boolean
         ignored:
           type: boolean
+        followed:
+          type: boolean
         unread:
           type: boolean
         bookmark:
@@ -265,6 +270,9 @@ TopicObjectSlim:
               name:
                 type: string
                 description: The topic thumbnail filename
+              path:
+                type: string
+                description: Path to topic thumbnail without upload_url prefix
               url:
                 type: string
                 description: Relative path to the topic thumbnail

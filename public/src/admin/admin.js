@@ -1,8 +1,17 @@
 'use strict';
 
+require('../app');
+
+// scripts-admin.js is generated during build, it contains javascript files
+// from plugins that add files to "acpScripts" block in plugin.json
+// eslint-disable-next-line
+require('../../scripts-admin');
+
+app.onDomReady();
+
 (function () {
-	var logoutTimer = 0;
-	var logoutMessage;
+	let logoutTimer = 0;
+	let logoutMessage;
 	function startLogoutTimer() {
 		if (app.config.adminReloginDuration <= 0) {
 			return;
@@ -20,52 +29,93 @@
 		}
 
 		logoutTimer = setTimeout(function () {
-			bootbox.alert({
-				closeButton: false,
-				message: logoutMessage,
-				callback: function () {
-					window.location.reload();
-				},
+			require(['bootbox'], function (bootbox) {
+				bootbox.alert({
+					closeButton: false,
+					message: logoutMessage,
+					callback: function () {
+						window.location.reload();
+					},
+				});
 			});
 		}, 3600000);
 	}
 
-	require(['hooks'], (hooks) => {
-		hooks.on('action:ajaxify.end', () => {
+	require(['hooks', 'admin/settings'], (hooks, Settings) => {
+		hooks.on('action:ajaxify.end', (data) => {
+			updatePageTitle(data.url);
+			setupRestartLinks();
 			showCorrectNavTab();
 			startLogoutTimer();
+
+			$('[data-bs-toggle="tooltip"]').tooltip({
+				animation: false,
+				container: '#content',
+			});
+
+			if ($('.settings').length) {
+				Settings.prepare();
+			}
+			if ($('[component="settings/toc"]').length) {
+				Settings.populateTOC();
+			}
+		});
+		hooks.on('action:ajaxify.start', function () {
+			require(['bootstrap'], function (boostrap) {
+				const offcanvas = boostrap.Offcanvas.getInstance('#offcanvas');
+				if (offcanvas) {
+					offcanvas.hide();
+				}
+			});
 		});
 	});
 
 	function showCorrectNavTab() {
-		// show correct tab if url has #
-		if (window.location.hash) {
-			$('.nav-pills a[href="' + window.location.hash + '"]').tab('show');
+		const accordionEl = $('[component="acp/accordion"]');
+		let pathname = window.location.pathname;
+		if (pathname === '/admin') {
+			pathname = '/admin/dashboard';
+		}
+		const selectedButton = accordionEl.find(`a[href="${pathname}"]`);
+		if (selectedButton.length) {
+			accordionEl.find('a').removeClass('active');
+			accordionEl.find('.accordion-collapse').removeClass('show');
+			selectedButton.addClass('active');
+			selectedButton.parents('.accordion-collapse').addClass('show');
 		}
 	}
 
 	$(document).ready(function () {
-		if (!/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
-			require(['admin/modules/search'], function (search) {
-				search.init();
-			});
-		}
+		require(['admin/modules/search'], function (search) {
+			search.init();
+		});
 
 		$('[component="logout"]').on('click', function () {
-			app.logout();
+			require(['logout'], function (logout) {
+				logout();
+			});
 			return false;
 		});
 
-		configureSlidemenu();
 		setupNProgress();
+		fixAccordionIds();
 	});
 
-	$(window).on('action:ajaxify.contentLoaded', function (ev, data) {
-		selectMenuItem(data.url);
-		setupRestartLinks();
-
-		componentHandler.upgradeDom();
-	});
+	function fixAccordionIds() {
+		// fix mobile accordion, so it doesn't have same ids as desktop
+		// the same accordion partial is used in both places
+		const offcanvasAccordion = $('#offcanvas #accordionACP');
+		offcanvasAccordion.attr('id', 'accordionACP-offcanvas');
+		offcanvasAccordion.find('[data-bs-target]').each((i, el) => {
+			$(el).attr('data-bs-target', $(el).attr('data-bs-target') + '-offcanvas');
+		});
+		offcanvasAccordion.find('[data-bs-parent]').each((i, el) => {
+			$(el).attr('data-bs-parent', '#accordionACP-offcanvas');
+		});
+		offcanvasAccordion.find('.accordion-collapse').each((i, el) => {
+			$(el).attr('id', $(el).attr('id') + '-offcanvas');
+		});
+	}
 
 	function setupNProgress() {
 		require(['nprogress', 'hooks'], function (NProgress, hooks) {
@@ -79,7 +129,7 @@
 		});
 	}
 
-	function selectMenuItem(url) {
+	function updatePageTitle(url) {
 		require(['translator'], function (translator) {
 			url = url
 				.replace(/\/\d+$/, '')
@@ -92,28 +142,19 @@
 			}
 
 			url = [config.relative_path, url].join('/');
-			var fallback;
+			let fallback;
 
-			$('#main-menu li').removeClass('active');
-			$('#main-menu a').removeClass('active').filter('[href="' + url + '"]').each(function () {
-				var menu = $(this);
-				if (menu.parent().attr('data-link')) {
-					return;
-				}
-
-				menu
-					.parent().addClass('active')
-					.parents('.menu-item').addClass('active');
-				fallback = menu.text();
+			$(`[component="acp/accordion"] a[href="${url}"]`).each(function () {
+				fallback = $(this).text();
 			});
 
-			var mainTitle;
-			var pageTitle;
+			let mainTitle;
+			let pageTitle;
 			if (/admin\/plugins\//.test(url)) {
 				mainTitle = fallback;
 				pageTitle = '[[admin/menu:section-plugins]] > ' + mainTitle;
 			} else {
-				var matches = url.match(/admin\/(.+?)\/(.+?)$/);
+				const matches = url.match(/admin\/(.+?)\/(.+?)$/);
 				if (matches) {
 					mainTitle = '[[admin/menu:' + matches[1] + '/' + matches[2] + ']]';
 					pageTitle = '[[admin/menu:section-' +
@@ -133,96 +174,31 @@
 			translator.translate(pageTitle, function (title) {
 				document.title = title.replace(/&gt;/g, '>');
 			});
-			translator.translate(mainTitle, function (text) {
-				$('#main-page-title').text(text);
-			});
 		});
 	}
 
 	function setupRestartLinks() {
-		$('.rebuild-and-restart').off('click').on('click', function () {
-			bootbox.confirm('[[admin/admin:alert.confirm-rebuild-and-restart]]', function (confirm) {
-				if (confirm) {
-					require(['admin/modules/instance'], function (instance) {
-						instance.rebuildAndRestart();
+		require(['benchpress', 'bootbox', 'admin/modules/instance'], function (benchpress, bootbox, instance) {
+			// need to preload the compiled alert template
+			// otherwise it can be unloaded when rebuild & restart is run
+			// the client can't fetch the template file, resulting in an error
+			benchpress.render('partials/toast', {}).then(function () {
+				$('[component="rebuild-and-restart"]').off('click').on('click', function () {
+					bootbox.confirm('[[admin/admin:alert.confirm-rebuild-and-restart]]', function (confirm) {
+						if (confirm) {
+							instance.rebuildAndRestart();
+						}
 					});
-				}
-			});
-		});
-
-		$('.restart').off('click').on('click', function () {
-			bootbox.confirm('[[admin/admin:alert.confirm-restart]]', function (confirm) {
-				if (confirm) {
-					require(['admin/modules/instance'], function (instance) {
-						instance.restart();
-					});
-				}
-			});
-		});
-	}
-
-	function configureSlidemenu() {
-		require(['slideout'], function (Slideout) {
-			var env = utils.findBootstrapEnvironment();
-
-			var slideout = new Slideout({
-				panel: document.getElementById('panel'),
-				menu: document.getElementById('menu'),
-				padding: 256,
-				tolerance: 70,
-			});
-
-			if (env === 'md' || env === 'lg') {
-				slideout.disableTouch();
-			}
-
-			$('#mobile-menu').on('click', function () {
-				slideout.toggle();
-			});
-
-			$('#menu a').on('click', function () {
-				slideout.close();
-			});
-
-			$(window).on('resize', function () {
-				slideout.close();
-
-				env = utils.findBootstrapEnvironment();
-
-				if (env === 'md' || env === 'lg') {
-					slideout.disableTouch();
-					$('#header').css({
-						position: 'relative',
-					});
-				} else {
-					slideout.enableTouch();
-					$('#header').css({
-						position: 'fixed',
-					});
-				}
-			});
-
-			function onOpeningMenu() {
-				$('#header').css({
-					top: ($('#panel').position().top * -1) + 'px',
-					position: 'absolute',
 				});
-			}
 
-			slideout.on('open', onOpeningMenu);
-
-			slideout.on('close', function () {
-				$('#header').css({
-					top: '0px',
-					position: 'fixed',
+				$('[component="restart"]').off('click').on('click', function () {
+					bootbox.confirm('[[admin/admin:alert.confirm-restart]]', function (confirm) {
+						if (confirm) {
+							instance.restart();
+						}
+					});
 				});
 			});
 		});
 	}
-
-	// tell ace to use the right paths when requiring modules
-	require(['ace/ace'], function (ace) {
-		ace.config.set('packaged', true);
-		ace.config.set('basePath', config.relative_path + '/assets/src/modules/ace/');
-	});
 }());

@@ -3,19 +3,7 @@
 const user = require('../../user');
 const plugins = require('../../plugins');
 
-const websockets = require('../index');
-const api = require('../../api');
-
 module.exports = function (SocketUser) {
-	SocketUser.changePicture = async function (socket, data) {
-		if (!socket.uid) {
-			throw new Error('[[error:invalid-uid]]');
-		}
-
-		websockets.warnDeprecated(socket, 'PUT /api/v3/users/:uid/picture');
-		await api.users.changePicture(socket, data);
-	};
-
 	SocketUser.removeUploadedPicture = async function (socket, data) {
 		if (!socket.uid || !data || !data.uid) {
 			throw new Error('[[error:invalid-data]]');
@@ -35,21 +23,35 @@ module.exports = function (SocketUser) {
 			throw new Error('[[error:invalid-data]]');
 		}
 
-		const [list, uploaded] = await Promise.all([
+		const [list, userObj] = await Promise.all([
 			plugins.hooks.fire('filter:user.listPictures', {
 				uid: data.uid,
 				pictures: [],
 			}),
-			user.getUserField(data.uid, 'uploadedpicture'),
+			user.getUserData(data.uid),
 		]);
 
-		if (uploaded) {
+		if (userObj.uploadedpicture) {
 			list.pictures.push({
 				type: 'uploaded',
-				url: uploaded,
-				text: '[[user:uploaded_picture]]',
+				url: userObj.uploadedpicture,
+				text: '[[user:uploaded-picture]]',
 			});
 		}
+
+		// Normalize list into "user object" format
+		list.pictures = list.pictures.map(({ type, url, text }) => ({
+			type,
+			username: text,
+			picture: url,
+		}));
+
+		list.pictures.unshift({
+			type: 'default',
+			'icon:text': userObj['icon:text'],
+			'icon:bgColor': userObj['icon:bgColor'],
+			username: '[[user:default-picture]]',
+		});
 
 		return list.pictures;
 	};

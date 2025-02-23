@@ -40,7 +40,7 @@ module.exports = function (Topics) {
 
 	Topics.getTopicField = async function (tid, field) {
 		const topic = await Topics.getTopicFields(tid, [field]);
-		return topic ? topic[field] : null;
+		return topic && topic.hasOwnProperty(field) ? topic[field] : null;
 	};
 
 	Topics.getTopicFields = async function (tid, fields) {
@@ -129,9 +129,14 @@ function modifyTopic(topic, fields) {
 
 	if (fields.includes('tags') || !fields.length) {
 		const tags = String(topic.tags || '');
-		topic.tags = tags.split(',').filter(Boolean).map(tag => ({
-			value: tag,
-			valueEscaped: validator.escape(String(tag)),
-		}));
+		topic.tags = tags.split(',').filter(Boolean).map((tag) => {
+			const escaped = validator.escape(String(tag));
+			return {
+				value: tag,
+				valueEscaped: escaped,
+				valueEncoded: encodeURIComponent(escaped),
+				class: escaped.replace(/\s/g, '-'),
+			};
+		});
 	}
 }

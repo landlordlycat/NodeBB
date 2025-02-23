@@ -94,9 +94,10 @@ async function getUsers(req, res) {
 
 	const set = buildSet();
 	const uids = await getUids(set);
-	const [count, users] = await Promise.all([
+	const [count, users, customUserFields] = await Promise.all([
 		getCount(set),
 		loadUserInfo(req.uid, uids),
+		getCustomUserFields(),
 	]);
 
 	await render(req, res, {
@@ -106,7 +107,13 @@ async function getUsers(req, res) {
 		resultsPerPage: resultsPerPage,
 		reverse: reverse,
 		sortBy: sortBy,
+		customUserFields,
 	});
+}
+
+async function getCustomUserFields() {
+	const keys = await db.getSortedSetRange('user-custom-fields', 0, -1);
+	return (await db.getObjects(keys.map(k => `user-custom-field:${k}`))).filter(Boolean);
 }
 
 usersController.search = async function (req, res) {
@@ -162,12 +169,20 @@ usersController.search = async function (req, res) {
 
 async function loadUserInfo(callerUid, uids) {
 	async function getIPs() {
-		return await Promise.all(uids.map(uid => db.getSortedSetRevRange(`uid:${uid}:ip`, 0, -1)));
+		return await Promise.all(uids.map(uid => db.getSortedSetRevRange(`uid:${uid}:ip`, 0, 4)));
 	}
-	const [isAdmin, userData, lastonline, ips] = await Promise.all([
+	async function getConfirmObjs() {
+		const keys = uids.map(uid => `confirm:byUid:${uid}`);
+		const codes = await db.mget(keys);
+		const confirmObjs = await db.getObjects(codes.map(code => `confirm:${code}`));
+		return uids.map((uid, index) => confirmObjs[index]);
+	}
+
+	const [isAdmin, userData, lastonline, confirmObjs, ips] = await Promise.all([
 		user.isAdministrator(uids),
 		user.getUsersWithFields(uids, userFields, callerUid),
 		db.sortedSetScores('users:online', uids),
+		getConfirmObjs(),
 		getIPs(),
 	]);
 	userData.forEach((user, index) => {
@@ -179,6 +194,13 @@ async function loadUserInfo(callerUid, uids) {
 			user.lastonlineISO = utils.toISOString(timestamp);
 			user.ips = ips[index];
 			user.ip = ips[index] && ips[index][0] ? ips[index][0] : null;
+			user.emailToConfirm = user.email;
+			if (confirmObjs[index] && confirmObjs[index].email) {
+				const confirmObj = confirmObjs[index];
+				user['email:expired'] = !confirmObj.expires || Date.now() >= confirmObj.expires;
+				user['email:pending'] = confirmObj.expires && Date.now() < confirmObj.expires;
+				user.emailToConfirm = validator.escape(String(confirmObj.email));
+			}
 		}
 	});
 	return userData;
@@ -199,6 +221,7 @@ usersController.registrationQueue = async function (req, res) {
 	const pageCount = Math.max(1, Math.ceil(data.registrationQueueCount / itemsPerPage));
 	data.pagination = pagination.create(page, pageCount);
 	data.customHeaders = data.customHeaders.headers;
+	data.title = '[[pages:registration-queue]]';
 	res.render('admin/manage/registration', data);
 };
 
@@ -277,4 +300,17 @@ usersController.getCSV = async function (req, res, next) {
 			return next(err);
 		}
 	});
+};
+
+usersController.customFields = async function (req, res) {
+	const keys = await db.getSortedSetRange('user-custom-fields', 0, -1);
+	const fields = (await db.getObjects(keys.map(k => `user-custom-field:${k}`))).filter(Boolean);
+	fields.forEach((field) => {
+		if (field['select-options']) {
+			field.selectOptionsFormatted = field['select-options'].trim().split('\n').join(', ');
+		}
+		field['min:rep'] = field['min:rep'] || 0;
+		field.visibility = field.visibility || 'all';
+	});
+	res.render('admin/manage/users/custom-fields', { fields: fields });
 };

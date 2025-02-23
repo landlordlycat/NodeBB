@@ -1,38 +1,44 @@
 'use strict';
 
 define('categorySelector', [
-	'categorySearch', 'bootbox', 'hooks',
-], function (categorySearch, bootbox, hooks) {
-	var categorySelector = {};
+	'categorySearch', 'bootbox', 'hooks', 'translator',
+], function (categorySearch, bootbox, hooks, translator) {
+	const categorySelector = {};
 
 	categorySelector.init = function (el, options) {
 		if (!el || !el.length) {
 			return;
 		}
 		options = options || {};
-		var onSelect = options.onSelect || function () {};
+		const onSelect = options.onSelect || function () {};
 
-		options.states = options.states || ['watching', 'notwatching', 'ignoring'];
-		options.template = 'partials/category-selector';
+		options.states = options.states || ['watching', 'tracking', 'notwatching', 'ignoring'];
+		options.template = options.template || 'partials/category/selector-dropdown-left';
 		hooks.fire('action:category.selector.options', { el: el, options: options });
 
 		categorySearch.init(el, options);
 
-		var selector = {
+		const selector = {
 			el: el,
 			selectedCategory: null,
 		};
+
 		el.on('click', '[data-cid]', function () {
-			var categoryEl = $(this);
+			const categoryEl = $(this);
 			if (categoryEl.hasClass('disabled')) {
 				return false;
 			}
 			selector.selectCategory(categoryEl.attr('data-cid'));
-			onSelect(selector.selectedCategory);
+			return onSelect(selector.selectedCategory);
 		});
 
+		let defaultSelectHtml = selector.el.find('[component="category-selector-selected"]').html();
+
+		translator.translate(defaultSelectHtml, (translated) => {
+			defaultSelectHtml = translated;
+		});
 		selector.selectCategory = function (cid) {
-			var categoryEl = selector.el.find('[data-cid="' + cid + '"]');
+			const categoryEl = selector.el.find('[data-cid="' + cid + '"]');
 			selector.selectedCategory = {
 				cid: cid,
 				name: categoryEl.attr('data-name'),
@@ -43,8 +49,8 @@ define('categorySelector', [
 					categoryEl.find('[component="category-markup"]').html()
 				);
 			} else {
-				selector.el.find('[component="category-selector-selected"]').translateHtml(
-					options.selectCategoryLabel || '[[topic:thread_tools.select_category]]'
+				selector.el.find('[component="category-selector-selected"]').html(
+					defaultSelectHtml
 				);
 			}
 		};
@@ -54,6 +60,14 @@ define('categorySelector', [
 		selector.getSelectedCid = function () {
 			return selector.selectedCategory ? selector.selectedCategory.cid : 0;
 		};
+
+		if (options.hasOwnProperty('selectedCategory')) {
+			app.parseAndTranslate(options.template, { selectedCategory: options.selectedCategory }, function (html) {
+				selector.el.find('[component="category-selector-selected"]').html(
+					html.find('[component="category-selector-selected"]').html()
+				);
+			});
+		}
 		return selector;
 	};
 
@@ -62,8 +76,8 @@ define('categorySelector', [
 		options.onSelect = options.onSelect || function () {};
 		options.onSubmit = options.onSubmit || function () {};
 		app.parseAndTranslate('admin/partials/categories/select-category', { message: options.message }, function (html) {
-			var modal = bootbox.dialog({
-				title: options.title || '[[modules:composer.select_category]]',
+			const modal = bootbox.dialog({
+				title: options.title || '[[modules:composer.select-category]]',
 				message: html,
 				buttons: {
 					save: {
@@ -74,7 +88,7 @@ define('categorySelector', [
 				},
 			});
 
-			var selector = categorySelector.init(modal.find('[component="category-selector"]'), options);
+			const selector = categorySelector.init(modal.find('[component="category-selector"]'), options);
 			function submit(ev) {
 				ev.preventDefault();
 				if (selector.selectedCategory) {

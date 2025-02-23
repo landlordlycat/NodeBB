@@ -64,12 +64,7 @@ get:
                             uptimeHumanReadable:
                               type: string
                             cpuUsage:
-                              type: object
-                              properties:
-                                user:
-                                  type: string
-                                system:
-                                  type: string
+                              type: number
                         os:
                           type: object
                           properties:
@@ -90,6 +85,8 @@ get:
                               type: string
                             totalmem:
                               type: string
+                            usedmem:
+                              type: string
                         nodebb:
                           type: object
                           properties:
@@ -100,6 +97,8 @@ get:
                             runJobs:
                               type: boolean
                             jobsDisabled:
+                              type: boolean
+                            acpPluginInstallDisabled:
                               type: boolean
                         git:
                           type: object
@@ -118,6 +117,8 @@ get:
                             onlineRegisteredCount:
                               type: number
                             socketCount:
+                              type: number
+                            connectionCount:
                               type: number
                             users:
                               type: object

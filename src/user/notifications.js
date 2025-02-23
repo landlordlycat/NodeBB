@@ -9,7 +9,9 @@ const meta = require('../meta');
 const notifications = require('../notifications');
 const privileges = require('../privileges');
 const plugins = require('../plugins');
-const utils = require('../utils');
+const translator = require('../translator');
+const topics = require('../topics');
+const user = require('./index');
 
 const UserNotifications = module.exports;
 
@@ -42,6 +44,28 @@ async function filterNotifications(nids, filter) {
 }
 
 UserNotifications.getAll = async function (uid, filter) {
+	const nids = await getAllNids(uid);
+	return await filterNotifications(nids, filter);
+};
+
+UserNotifications.getAllWithCounts = async function (uid, filter) {
+	const nids = await getAllNids(uid);
+	const keys = nids.map(nid => `notifications:${nid}`);
+	let notifications = await db.getObjectsFields(keys, ['nid', 'type']);
+	const counts = {};
+	notifications.forEach((n) => {
+		if (n && n.type) {
+			counts[n.type] = counts[n.type] || 0;
+			counts[n.type] += 1;
+		}
+	});
+	if (filter) {
+		notifications = notifications.filter(n => n && n.nid && n.type === filter);
+	}
+	return { counts, nids: notifications.map(n => n.nid) };
+};
+
+async function getAllNids(uid) {
 	let nids = await db.getSortedSetRevRange([
 		`uid:${uid}:notifications:unread`,
 		`uid:${uid}:notifications:read`,
@@ -56,10 +80,9 @@ UserNotifications.getAll = async function (uid, filter) {
 		}
 		return nid && exists[index];
 	});
-
 	await deleteUserNids(deleteNids, uid);
-	return await filterNotifications(nids, filter);
-};
+	return nids;
+}
 
 async function deleteUserNids(nids, uid) {
 	await db.sortedSetRemove([
@@ -78,9 +101,10 @@ UserNotifications.getNotifications = async function (nids, uid) {
 		return [];
 	}
 
-	const [notifObjs, hasRead] = await Promise.all([
+	const [notifObjs, hasRead, userSettings] = await Promise.all([
 		notifications.getMultiple(nids),
 		db.isSortedSetMembers(`uid:${uid}:notifications:read`, nids),
+		user.getSettings(uid),
 	]);
 
 	const deletedNids = [];
@@ -98,6 +122,12 @@ UserNotifications.getNotifications = async function (nids, uid) {
 
 	await deleteUserNids(deletedNids, uid);
 	notificationData = await notifications.merge(notificationData);
+	await Promise.all(notificationData.map(async (n) => {
+		if (n && n.bodyShort) {
+			n.bodyShort = await translator.translate(n.bodyShort, userSettings.userLang);
+		}
+	}));
+
 	const result = await plugins.hooks.fire('filter:user.notifications.getNotifications', {
 		uid: uid,
 		notifications: notificationData,
@@ -171,20 +201,18 @@ UserNotifications.deleteAll = async function (uid) {
 
 UserNotifications.sendTopicNotificationToFollowers = async function (uid, topicData, postData) {
 	try {
-		let followers = await db.getSortedSetRange(`followers:${uid}`, 0, -1);
-		followers = await privileges.categories.filterUids('read', topicData.cid, followers);
+		const [allFollowers, title] = await Promise.all([
+			db.getSortedSetRange(`followers:${uid}`, 0, -1),
+			topics.getTopicField(topicData.tid, 'title'),
+		]);
+		const followers = await privileges.categories.filterUids('read', topicData.cid, allFollowers);
 		if (!followers.length) {
 			return;
-		}
-		let { title } = topicData;
-		if (title) {
-			title = utils.decodeHTMLEntities(title);
-			title = title.replace(/,/g, '\\,');
 		}
 
 		const notifObj = await notifications.create({
 			type: 'new-topic',
-			bodyShort: `[[notifications:user_posted_topic, ${postData.user.username}, ${title}]]`,
+			bodyShort: translator.compile('notifications:user-posted-topic', postData.user.displayname, title),
 			bodyLong: postData.content,
 			pid: postData.pid,
 			path: `/post/${postData.pid}`,
@@ -217,7 +245,7 @@ UserNotifications.sendWelcomeNotification = async function (uid) {
 
 UserNotifications.sendNameChangeNotification = async function (uid, username) {
 	const notifObj = await notifications.create({
-		bodyShort: `[[user:username_taken_workaround, ${username}]]`,
+		bodyShort: `[[user:username-taken-workaround, ${username}]]`,
 		image: 'brand:logo',
 		nid: `username_taken:${uid}`,
 		datetime: Date.now(),

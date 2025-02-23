@@ -19,7 +19,7 @@ const socketHelpers = require('../socket.io/helpers');
 
 module.exports = function (Posts) {
 	Posts.getQueuedPosts = async (filter = {}, options = {}) => {
-		options = { metadata: true, ...options };	// defaults
+		options = { metadata: true, ...options }; // defaults
 		let postData = _.cloneDeep(cache.get('post-queue'));
 		if (!postData) {
 			const ids = await db.getSortedSetRange('post:queue', 0, -1);
@@ -32,29 +32,38 @@ module.exports = function (Posts) {
 				}
 			});
 			const uids = postData.map(data => data && data.uid);
-			const userData = await user.getUsersFields(uids, ['username', 'userslug', 'picture']);
+			const userData = await user.getUsersFields(uids, [
+				'username', 'userslug', 'picture', 'joindate', 'postcount', 'reputation',
+			]);
 			postData.forEach((postData, index) => {
 				if (postData) {
 					postData.user = userData[index];
+					if (postData.user.uid === 0 && postData.data.handle) {
+						postData.user.username = validator.escape(String(postData.data.handle));
+						postData.user.displayname = postData.user.username;
+						postData.user.fullname = postData.user.username;
+					}
 					postData.data.rawContent = validator.escape(String(postData.data.content));
 					postData.data.title = validator.escape(String(postData.data.title || ''));
 				}
 			});
 			cache.set('post-queue', _.cloneDeep(postData));
 		}
-
+		if (filter.id) {
+			postData = postData.filter(p => p.id === filter.id);
+		}
 		if (options.metadata) {
-			await Promise.all(postData.map(p => addMetaData(p)));
+			await Promise.all(postData.map(addMetaData));
 		}
 
 		// Filter by tid if present
-		if (utils.isNumber(filter.tid)) {
-			const tid = parseInt(filter.tid, 10);
-			postData = postData.filter(item => item.data.tid && parseInt(item.data.tid, 10) === tid);
+		if (filter.tid) {
+			const tid = String(filter.tid);
+			postData = postData.filter(item => item.data.tid && String(item.data.tid) === tid);
 		} else if (Array.isArray(filter.tid)) {
-			const tids = filter.tid.map(tid => parseInt(tid, 10));
+			const tids = filter.tid.map(String);
 			postData = postData.filter(
-				item => item.data.tid && tids.includes(parseInt(item.data.tid, 10))
+				item => item.data.tid && tids.includes(String(item.data.tid))
 			);
 		}
 
@@ -69,23 +78,58 @@ module.exports = function (Posts) {
 		if (postData.data.cid) {
 			postData.topic = { cid: parseInt(postData.data.cid, 10) };
 		} else if (postData.data.tid) {
-			postData.topic = await topics.getTopicFields(postData.data.tid, ['title', 'cid']);
+			postData.topic = await topics.getTopicFields(postData.data.tid, ['title', 'cid', 'lastposttime']);
 		}
 		postData.category = await categories.getCategoryData(postData.topic.cid);
 		const result = await plugins.hooks.fire('filter:parse.post', { postData: postData.data });
 		postData.data.content = result.postData.content;
 	}
 
-	Posts.shouldQueue = async function (uid, data) {
-		const [userData, isMemberOfExempt, categoryQueueEnabled] = await Promise.all([
-			user.getUserFields(uid, ['uid', 'reputation', 'postcount']),
-			groups.isMemberOfAny(uid, meta.config.groupsExemptFromPostQueue),
-			isCategoryQueueEnabled(data),
+	Posts.canUserPostContentWithLinks = async function (uid, content) {
+		if (!content) {
+			return true;
+		}
+		const [reputation, isPrivileged] = await Promise.all([
+			user.getUserField(uid, 'reputation'),
+			user.isPrivileged(uid),
 		]);
 
-		const shouldQueue = meta.config.postQueue && categoryQueueEnabled &&
-			!isMemberOfExempt &&
-			(!userData.uid || userData.reputation < meta.config.postQueueReputationThreshold || userData.postcount <= 0);
+		if (!isPrivileged && reputation < meta.config['min:rep:post-links']) {
+			const parsed = await plugins.hooks.fire('filter:parse.raw', String(content));
+			const matches = parsed.matchAll(/<a[^>]*href="([^"]+)"[^>]*>/g);
+			let external = 0;
+			for (const [, href] of matches) {
+				const internal = utils.isInternalURI(new URL(href, nconf.get('url')), new URL(nconf.get('url')), nconf.get('relative_path'));
+				if (!internal) {
+					external += 1;
+				}
+			}
+
+			return external === 0;
+		}
+		return true;
+	};
+
+	Posts.shouldQueue = async function (uid, data) {
+		let shouldQueue = meta.config.postQueue;
+		if (shouldQueue) {
+			const [userData, isPrivileged, isMemberOfExempt, categoryQueueEnabled] = await Promise.all([
+				user.getUserFields(uid, ['uid', 'reputation', 'postcount']),
+				user.isPrivileged(uid),
+				groups.isMemberOfAny(uid, meta.config.groupsExemptFromPostQueue),
+				isCategoryQueueEnabled(data),
+			]);
+			shouldQueue = categoryQueueEnabled &&
+				!isPrivileged &&
+				!isMemberOfExempt &&
+				(
+					!userData.uid ||
+					userData.reputation < meta.config.postQueueReputationThreshold ||
+					userData.postcount <= 0 ||
+					!await Posts.canUserPostContentWithLinks(uid, data.content)
+				);
+		}
+
 		const result = await plugins.hooks.fire('filter:post.shouldQueue', {
 			shouldQueue: !!shouldQueue,
 			uid: uid,
@@ -98,7 +142,7 @@ module.exports = function (Posts) {
 		const type = getType(data);
 		const cid = await getCid(type, data);
 		if (!cid) {
-			throw new Error('[[error:invalid-cid]]');
+			return true;
 		}
 		return await categories.getCategoryField(cid, 'postQueue');
 	}
@@ -159,9 +203,9 @@ module.exports = function (Posts) {
 			type: 'post-queue',
 			nid: `post-queue-${id}`,
 			mergeId: 'post-queue',
-			bodyShort: '[[notifications:post_awaiting_review]]',
+			bodyShort: '[[notifications:post-awaiting-review]]',
 			bodyLong: bodyLong,
-			path: '/post-queue',
+			path: `/post-queue/${id}`,
 		});
 		await notifications.push(notifObj, uids);
 		return {
@@ -235,20 +279,28 @@ module.exports = function (Posts) {
 	Posts.removeFromQueue = async function (id) {
 		const data = await getParsedObject(id);
 		if (!data) {
-			return;
+			return null;
 		}
+		const result = await plugins.hooks.fire('filter:post-queue:removeFromQueue', { data: data });
+		await removeFromQueue(id);
+		plugins.hooks.fire('action:post-queue:removeFromQueue', { data: result.data });
+		return result.data;
+	};
+
+	async function removeFromQueue(id) {
 		await removeQueueNotification(id);
 		await db.sortedSetRemove('post:queue', id);
 		await db.delete(`post:queue:${id}`);
 		cache.del('post-queue');
-		return data;
-	};
+	}
 
 	Posts.submitFromQueue = async function (id) {
-		const data = await getParsedObject(id);
+		let data = await getParsedObject(id);
 		if (!data) {
-			return;
+			return null;
 		}
+		const result = await plugins.hooks.fire('filter:post-queue:submitFromQueue', { data: data });
+		data = result.data;
 		if (data.type === 'topic') {
 			const result = await createTopic(data.data);
 			data.pid = result.postData.pid;
@@ -256,8 +308,13 @@ module.exports = function (Posts) {
 			const result = await createReply(data.data);
 			data.pid = result.pid;
 		}
-		await Posts.removeFromQueue(id);
+		await removeFromQueue(id);
+		plugins.hooks.fire('action:post-queue:submitFromQueue', { data: data });
 		return data;
+	};
+
+	Posts.getFromQueue = async function (id) {
+		return await getParsedObject(id);
 	};
 
 	async function getParsedObject(id) {
@@ -288,14 +345,17 @@ module.exports = function (Posts) {
 	}
 
 	Posts.editQueuedContent = async function (uid, editData) {
-		const canEditQueue = await Posts.canEditQueue(uid, editData);
+		const [canEditQueue, data] = await Promise.all([
+			Posts.canEditQueue(uid, editData, 'edit'),
+			getParsedObject(editData.id),
+		]);
+		if (!data) {
+			throw new Error('[[error:no-post]]');
+		}
 		if (!canEditQueue) {
 			throw new Error('[[error:no-privileges]]');
 		}
-		const data = await getParsedObject(editData.id);
-		if (!data) {
-			return;
-		}
+
 		if (editData.content !== undefined) {
 			data.data.content = editData.content;
 		}
@@ -309,7 +369,7 @@ module.exports = function (Posts) {
 		cache.del('post-queue');
 	};
 
-	Posts.canEditQueue = async function (uid, editData) {
+	Posts.canEditQueue = async function (uid, editData, action) {
 		const [isAdminOrGlobalMod, data] = await Promise.all([
 			user.isAdminOrGlobalMod(uid),
 			getParsedObject(editData.id),
@@ -317,8 +377,8 @@ module.exports = function (Posts) {
 		if (!data) {
 			return false;
 		}
-
-		if (isAdminOrGlobalMod) {
+		const selfPost = parseInt(uid, 10) === parseInt(data.uid, 10);
+		if (isAdminOrGlobalMod || ((action === 'reject' || action === 'edit') && selfPost)) {
 			return true;
 		}
 
@@ -343,8 +403,7 @@ module.exports = function (Posts) {
 				post.data.tid = newTid;
 			});
 			await db.setObjectBulk(
-				postData.map(p => `post:queue:${p.id}`),
-				postData.map(p => ({ data: JSON.stringify(p.data) }))
+				postData.map(p => [`post:queue:${p.id}`, { data: JSON.stringify(p.data) }]),
 			);
 			cache.del('post-queue');
 		}

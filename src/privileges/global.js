@@ -11,48 +11,51 @@ const utils = require('../utils');
 
 const privsGlobal = module.exports;
 
-privsGlobal.privilegeLabels = [
-	{ name: '[[admin/manage/privileges:chat]]' },
-	{ name: '[[admin/manage/privileges:upload-images]]' },
-	{ name: '[[admin/manage/privileges:upload-files]]' },
-	{ name: '[[admin/manage/privileges:signature]]' },
-	{ name: '[[admin/manage/privileges:invite]]' },
-	{ name: '[[admin/manage/privileges:allow-group-creation]]' },
-	{ name: '[[admin/manage/privileges:search-content]]' },
-	{ name: '[[admin/manage/privileges:search-users]]' },
-	{ name: '[[admin/manage/privileges:search-tags]]' },
-	{ name: '[[admin/manage/privileges:view-users]]' },
-	{ name: '[[admin/manage/privileges:view-tags]]' },
-	{ name: '[[admin/manage/privileges:view-groups]]' },
-	{ name: '[[admin/manage/privileges:allow-local-login]]' },
-	{ name: '[[admin/manage/privileges:ban]]' },
-	{ name: '[[admin/manage/privileges:view-users-info]]' },
-];
+/**
+ * Looking to add a new global privilege via plugin/theme? Attach a hook to
+ * `static:privileges.global.init` and call .set() on the privilege map passed
+ * in to your listener.
+ */
+const _privilegeMap = new Map([
+	['chat', { label: '[[admin/manage/privileges:chat]]', type: 'posting' }],
+	['chat:privileged', { label: '[[admin/manage/privileges:chat-with-privileged]]', type: 'posting' }],
+	['upload:post:image', { label: '[[admin/manage/privileges:upload-images]]', type: 'posting' }],
+	['upload:post:file', { label: '[[admin/manage/privileges:upload-files]]', type: 'posting' }],
+	['signature', { label: '[[admin/manage/privileges:signature]]', type: 'posting' }],
+	['invite', { label: '[[admin/manage/privileges:invite]]', type: 'posting' }],
+	['group:create', { label: '[[admin/manage/privileges:allow-group-creation]]', type: 'posting' }],
+	['search:content', { label: '[[admin/manage/privileges:search-content]]', type: 'viewing' }],
+	['search:users', { label: '[[admin/manage/privileges:search-users]]', type: 'viewing' }],
+	['search:tags', { label: '[[admin/manage/privileges:search-tags]]', type: 'viewing' }],
+	['view:users', { label: '[[admin/manage/privileges:view-users]]', type: 'viewing' }],
+	['view:tags', { label: '[[admin/manage/privileges:view-tags]]', type: 'viewing' }],
+	['view:groups', { label: '[[admin/manage/privileges:view-groups]]', type: 'viewing' }],
+	['local:login', { label: '[[admin/manage/privileges:allow-local-login]]', type: 'viewing' }],
+	['ban', { label: '[[admin/manage/privileges:ban]]', type: 'moderation' }],
+	['mute', { label: '[[admin/manage/privileges:mute]]', type: 'moderation' }],
+	['view:users:info', { label: '[[admin/manage/privileges:view-users-info]]', type: 'moderation' }],
+]);
 
-privsGlobal.userPrivilegeList = [
-	'chat',
-	'upload:post:image',
-	'upload:post:file',
-	'signature',
-	'invite',
-	'group:create',
-	'search:content',
-	'search:users',
-	'search:tags',
-	'view:users',
-	'view:tags',
-	'view:groups',
-	'local:login',
-	'ban',
-	'view:users:info',
-];
+privsGlobal.init = async () => {
+	privsGlobal._coreSize = _privilegeMap.size;
+	await plugins.hooks.fire('static:privileges.global.init', {
+		privileges: _privilegeMap,
+	});
 
-privsGlobal.groupPrivilegeList = privsGlobal.userPrivilegeList.map(privilege => `groups:${privilege}`);
+	for (const [, value] of _privilegeMap) {
+		if (value && !value.type) {
+			value.type = 'other';
+		}
+	}
+};
 
-privsGlobal.privilegeList = privsGlobal.userPrivilegeList.concat(privsGlobal.groupPrivilegeList);
+privsGlobal.getType = function (privilege) {
+	const priv = _privilegeMap.get(privilege);
+	return priv && priv.type ? priv.type : '';
+};
 
-privsGlobal.getUserPrivilegeList = async () => await plugins.hooks.fire('filter:privileges.global.list', privsGlobal.userPrivilegeList.slice());
-privsGlobal.getGroupPrivilegeList = async () => await plugins.hooks.fire('filter:privileges.global.groups.list', privsGlobal.groupPrivilegeList.slice());
+privsGlobal.getUserPrivilegeList = async () => await plugins.hooks.fire('filter:privileges.global.list', Array.from(_privilegeMap.keys()));
+privsGlobal.getGroupPrivilegeList = async () => await plugins.hooks.fire('filter:privileges.global.groups.list', Array.from(_privilegeMap.keys()).map(privilege => `groups:${privilege}`));
 privsGlobal.getPrivilegeList = async () => {
 	const [user, group] = await Promise.all([
 		privsGlobal.getUserPrivilegeList(),
@@ -63,26 +66,29 @@ privsGlobal.getPrivilegeList = async () => {
 
 privsGlobal.list = async function () {
 	async function getLabels() {
+		const labels = Array.from(_privilegeMap.values()).map(data => data.label);
 		return await utils.promiseParallel({
-			users: plugins.hooks.fire('filter:privileges.global.list_human', privsGlobal.privilegeLabels.slice()),
-			groups: plugins.hooks.fire('filter:privileges.global.groups.list_human', privsGlobal.privilegeLabels.slice()),
+			users: plugins.hooks.fire('filter:privileges.global.list_human', labels.slice()),
+			groups: plugins.hooks.fire('filter:privileges.global.groups.list_human', labels.slice()),
 		});
 	}
 
 	const keys = await utils.promiseParallel({
-		users: plugins.hooks.fire('filter:privileges.global.list', privsGlobal.userPrivilegeList.slice()),
-		groups: plugins.hooks.fire('filter:privileges.global.groups.list', privsGlobal.groupPrivilegeList.slice()),
+		users: privsGlobal.getUserPrivilegeList(),
+		groups: privsGlobal.getGroupPrivilegeList(),
 	});
 
 	const payload = await utils.promiseParallel({
 		labels: getLabels(),
+		labelData: Array.from(_privilegeMap.values()),
 		users: helpers.getUserPrivileges(0, keys.users),
 		groups: helpers.getGroupPrivileges(0, keys.groups),
 	});
 	payload.keys = keys;
 
-	// This is a hack because I can't do {labels.users.length} to echo the count in templates.js
-	payload.columnCount = payload.labels.users.length + 3;
+	payload.columnCountUserOther = keys.users.length - privsGlobal._coreSize;
+	payload.columnCountGroupOther = keys.groups.length - privsGlobal._coreSize;
+
 	return payload;
 };
 
@@ -100,11 +106,14 @@ privsGlobal.get = async function (uid) {
 };
 
 privsGlobal.can = async function (privilege, uid) {
+	const isArray = Array.isArray(privilege);
 	const [isAdministrator, isUserAllowedTo] = await Promise.all([
 		user.isAdministrator(uid),
-		helpers.isAllowedTo(privilege, uid, [0]),
+		helpers.isAllowedTo(isArray ? privilege : [privilege], uid, 0),
 	]);
-	return isAdministrator || isUserAllowedTo[0];
+	return isArray ?
+		isUserAllowedTo.map(allowed => isAdministrator || allowed) :
+		isAdministrator || isUserAllowedTo[0];
 };
 
 privsGlobal.canGroup = async function (privilege, groupName) {
@@ -140,4 +149,9 @@ privsGlobal.userPrivileges = async function (uid) {
 privsGlobal.groupPrivileges = async function (groupName) {
 	const groupPrivilegeList = await privsGlobal.getGroupPrivilegeList();
 	return await helpers.userOrGroupPrivileges(0, groupName, groupPrivilegeList);
+};
+
+privsGlobal.getUidsWithPrivilege = async function (privilege) {
+	const uidsByCid = await helpers.getUidsWithPrivilege([0], privilege);
+	return uidsByCid[0];
 };

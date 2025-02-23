@@ -25,15 +25,10 @@ async function registerAndLoginUser(req, res, userData) {
 		userData.updateEmail = true;
 	}
 
-	const data = await plugins.hooks.fire('filter:register.interstitial', {
-		req,
-		userData,
-		interstitials: [],
-	});
+	const data = await user.interstitials.get(req, userData);
 
 	// If interstitials are found, save registration attempt into session and abort
 	const deferRegistration = data.interstitials.length;
-
 	if (deferRegistration) {
 		userData.register = true;
 		req.session.registration = userData;
@@ -45,6 +40,7 @@ async function registerAndLoginUser(req, res, userData) {
 		res.json({ next: `${nconf.get('relative_path')}/register/complete` });
 		return;
 	}
+
 	const queue = await user.shouldQueueUser(req.ip);
 	const result = await plugins.hooks.fire('filter:register.shouldQueue', { req: req, res: res, userData: userData, queue: queue });
 	if (result.queue) {
@@ -53,7 +49,10 @@ async function registerAndLoginUser(req, res, userData) {
 
 	const uid = await user.create(userData);
 	if (res.locals.processLogin) {
-		await authenticationController.doLogin(req, uid);
+		const hasLoginPrivilege = await privileges.global.can('local:login', uid);
+		if (hasLoginPrivilege) {
+			await authenticationController.doLogin(req, uid);
+		}
 	}
 
 	// Distinguish registrations through invites from direct ones
@@ -65,7 +64,10 @@ async function registerAndLoginUser(req, res, userData) {
 		]);
 	}
 	await user.deleteInvitationKey(userData.email, userData.token);
-	const next = req.session.returnTo || `${nconf.get('relative_path')}/`;
+	let next = req.session.returnTo || `${nconf.get('relative_path')}/`;
+	if (req.loggedIn && next === `${nconf.get('relative_path')}/login`) {
+		next = `${nconf.get('relative_path')}/`;
+	}
 	const complete = await plugins.hooks.fire('filter:register.complete', { uid: uid, next: next });
 	req.session.returnTo = complete.next;
 	return complete;
@@ -97,7 +99,7 @@ authenticationController.register = async function (req, res) {
 		}
 
 		if (userData.password !== userData['password-confirm']) {
-			throw new Error('[[user:change_password_error_match]]');
+			throw new Error('[[user:change-password-error-match]]');
 		}
 
 		if (userData.password.length > 512) {
@@ -106,7 +108,9 @@ authenticationController.register = async function (req, res) {
 
 		user.isPasswordValid(userData.password);
 
-		res.locals.processLogin = true;	// set it to false in plugin if you wish to just register only
+		await plugins.hooks.fire('filter:password.check', { password: userData.password, uid: 0, userData: userData });
+
+		res.locals.processLogin = true; // set it to false in plugin if you wish to just register only
 		await plugins.hooks.fire('filter:register.check', { req: req, res: res, userData: userData });
 
 		const data = await registerAndLoginUser(req, res, userData);
@@ -128,7 +132,7 @@ async function addToApprovalQueue(req, userData) {
 	if (meta.config.showAverageApprovalTime) {
 		const average_time = await db.getObjectField('registration:queue:approval:times', 'average');
 		if (average_time > 0) {
-			message += ` [[register:registration-queue-average-time, ${Math.floor(average_time / 60)}, ${average_time % 60}]]`;
+			message += ` [[register:registration-queue-average-time, ${Math.floor(average_time / 60)}, ${Math.floor(average_time % 60)}]]`;
 		}
 	}
 	if (meta.config.autoApproveTime > 0) {
@@ -140,18 +144,13 @@ async function addToApprovalQueue(req, userData) {
 authenticationController.registerComplete = async function (req, res) {
 	try {
 		// For the interstitials that respond, execute the callback with the form body
-		const data = await plugins.hooks.fire('filter:register.interstitial', {
-			req,
-			userData: req.session.registration,
-			interstitials: [],
-		});
-
+		const data = await user.interstitials.get(req, req.session.registration);
 		const callbacks = data.interstitials.reduce((memo, cur) => {
 			if (cur.hasOwnProperty('callback') && typeof cur.callback === 'function') {
 				req.body.files = req.files;
 				if (
 					(cur.callback.constructor && cur.callback.constructor.name === 'AsyncFunction') ||
-					cur.callback.length === 2	// non-async function w/o callback
+					cur.callback.length === 2 // non-async function w/o callback
 				) {
 					memo.push(cur.callback);
 				} else {
@@ -164,15 +163,15 @@ authenticationController.registerComplete = async function (req, res) {
 
 		const done = function (data) {
 			delete req.session.registration;
-
+			const relative_path = nconf.get('relative_path');
 			if (data && data.message) {
-				return res.redirect(`${nconf.get('relative_path')}/?register=${encodeURIComponent(data.message)}`);
+				return res.redirect(`${relative_path}/?register=${encodeURIComponent(data.message)}`);
 			}
 
 			if (req.session.returnTo) {
-				res.redirect(nconf.get('relative_path') + req.session.returnTo);
+				res.redirect(relative_path + req.session.returnTo.replace(new RegExp(`^${relative_path}`), ''));
 			} else {
-				res.redirect(`${nconf.get('relative_path')}/`);
+				res.redirect(`${relative_path}/`);
 			}
 		};
 
@@ -182,12 +181,14 @@ authenticationController.registerComplete = async function (req, res) {
 		const errors = results.map(result => result.status === 'rejected' && result.reason && result.reason.message).filter(Boolean);
 		if (errors.length) {
 			req.flash('errors', errors);
-			return res.redirect(`${nconf.get('relative_path')}/register/complete`);
+			return req.session.save(() => {
+				res.redirect(`${nconf.get('relative_path')}/register/complete`);
+			});
 		}
 
 		if (req.session.registration.register === true) {
 			res.locals.processLogin = true;
-			req.body.noscript = 'true';	// trigger full page load on error
+			req.body.noscript = 'true'; // trigger full page load on error
 
 			const data = await registerAndLoginUser(req, res, req.session.registration);
 			if (!data) {
@@ -216,18 +217,23 @@ authenticationController.registerComplete = async function (req, res) {
 	}
 };
 
-authenticationController.registerAbort = function (req, res) {
-	if (req.uid) {
-		// Clear interstitial data and continue on...
-		delete req.session.registration;
-		res.redirect(nconf.get('relative_path') + req.session.returnTo);
-	} else {
-		// End the session and redirect to home
-		req.session.destroy(() => {
-			res.clearCookie(nconf.get('sessionKey'), meta.configs.cookie.get());
-			res.redirect(`${nconf.get('relative_path')}/`);
-		});
+authenticationController.registerAbort = async (req, res) => {
+	if (req.uid && req.session.registration) {
+		// Email is the only cancelable interstitial
+		delete req.session.registration.updateEmail;
+
+		const { interstitials } = await user.interstitials.get(req, req.session.registration);
+		if (!interstitials.length) {
+			delete req.session.registration;
+			return res.redirect(nconf.get('relative_path') + (req.session.returnTo || '/'));
+		}
 	}
+
+	// End the session and redirect to home
+	req.session.destroy(() => {
+		res.clearCookie(nconf.get('sessionKey'), meta.configs.cookie.get());
+		res.redirect(`${nconf.get('relative_path')}/`);
+	});
 };
 
 authenticationController.login = async (req, res, next) => {
@@ -242,7 +248,7 @@ authenticationController.login = async (req, res, next) => {
 	}
 
 	const loginWith = meta.config.allowLoginWith || 'username-email';
-	req.body.username = req.body.username.trim();
+	req.body.username = String(req.body.username).trim();
 	const errorHandler = res.locals.noScriptErrors || helpers.noScriptErrors;
 	try {
 		await plugins.hooks.fire('filter:login.check', { req: req, res: res, userData: req.body });
@@ -259,7 +265,7 @@ authenticationController.login = async (req, res, next) => {
 			}
 		}
 		if (isEmailLogin || isUsernameLogin) {
-			(res.locals.continueLogin || continueLogin)(strategy, req, res, next);
+			continueLogin(strategy, req, res, next);
 		} else {
 			errorHandler(req, res, `[[error:wrong-login-type-${loginWith}]]`, 400);
 		}
@@ -292,8 +298,9 @@ function continueLogin(strategy, req, res, next) {
 			req.session.cookie.maxAge = duration;
 			req.session.cookie.expires = new Date(Date.now() + duration);
 		} else {
-			req.session.cookie.maxAge = false;
-			req.session.cookie.expires = false;
+			const duration = meta.config.sessionDuration * 1000;
+			req.session.cookie.maxAge = duration || false;
+			req.session.cookie.expires = duration ? new Date(Date.now() + duration) : false;
 		}
 
 		plugins.hooks.fire('action:login.continue', { req, strategy, userData, error: null });
@@ -303,9 +310,7 @@ function continueLogin(strategy, req, res, next) {
 			req.session.passwordExpired = true;
 
 			const code = await user.reset.generate(userData.uid);
-			res.status(200).send({
-				next: `${nconf.get('relative_path')}/reset/${code}`,
-			});
+			(res.locals.redirectAfterLogin || redirectAfterLogin)(req, res, `${nconf.get('relative_path')}/reset/${code}`);
 		} else {
 			delete req.query.lang;
 			await authenticationController.doLogin(req, userData.uid);
@@ -319,15 +324,19 @@ function continueLogin(strategy, req, res, next) {
 				destination = `${nconf.get('relative_path')}/`;
 			}
 
-			if (req.body.noscript === 'true') {
-				res.redirect(`${destination}?loggedin`);
-			} else {
-				res.status(200).send({
-					next: destination,
-				});
-			}
+			(res.locals.redirectAfterLogin || redirectAfterLogin)(req, res, destination);
 		}
 	})(req, res, next);
+}
+
+function redirectAfterLogin(req, res, destination) {
+	if (req.body.noscript === 'true') {
+		res.redirect(`${destination}?loggedin`);
+	} else {
+		res.status(200).send({
+			next: destination,
+		});
+	}
 }
 
 authenticationController.doLogin = async function (req, uid) {
@@ -335,23 +344,11 @@ authenticationController.doLogin = async function (req, uid) {
 		return;
 	}
 	const loginAsync = util.promisify(req.login).bind(req);
-
-	const { reroll } = req.res.locals;
-	if (reroll !== false) {
-		const regenerateSession = util.promisify(req.session.regenerate).bind(req.session);
-
-		const sessionData = { ...req.session };
-		await regenerateSession();
-		for (const [prop, value] of Object.entries(sessionData)) {
-			req.session[prop] = value;
-		}
-	}
-
-	await loginAsync({ uid: uid });
+	await loginAsync({ uid: uid }, { keepSessionInfo: req.res.locals.reroll !== false });
 	await authenticationController.onSuccessfulLogin(req, uid);
 };
 
-authenticationController.onSuccessfulLogin = async function (req, uid) {
+authenticationController.onSuccessfulLogin = async function (req, uid, trackSession = true) {
 	/*
 	 * Older code required that this method be called from within the SSO plugin.
 	 * That behaviour is no longer required, onSuccessfulLogin is now automatically
@@ -386,16 +383,15 @@ authenticationController.onSuccessfulLogin = async function (req, uid) {
 			version: req.useragent.version,
 		});
 		await Promise.all([
-			new Promise(resolve => req.session.save(resolve)),
-			user.auth.addSession(uid, req.sessionID),
+			new Promise((resolve) => {
+				req.session.save(resolve);
+			}),
+			trackSession ? user.auth.addSession(uid, req.sessionID) : undefined,
 			user.updateLastOnlineTime(uid),
-			user.updateOnlineUsers(uid),
+			user.onUserOnline(uid, Date.now()),
 			analytics.increment('logins'),
 			db.incrObjectFieldBy('global', 'loginCount', 1),
 		]);
-		if (uid > 0) {
-			await db.setObjectField(`uid:${uid}:sessionUUID:sessionId`, uuid, req.sessionID);
-		}
 
 		// Force session check for all connected socket.io clients with the same session id
 		sockets.in(`sess_${req.sessionID}`).emit('checkSession', uid);
@@ -406,6 +402,9 @@ authenticationController.onSuccessfulLogin = async function (req, uid) {
 		throw err;
 	}
 };
+
+const destroyAsync = util.promisify((req, callback) => req.session.destroy(callback));
+const logoutAsync = util.promisify((req, callback) => req.logout(callback));
 
 authenticationController.localLogin = async function (req, username, password, next) {
 	if (!username) {
@@ -441,9 +440,17 @@ authenticationController.localLogin = async function (req, username, password, n
 			return next(new Error('[[error:local-login-disabled]]'));
 		}
 
-		const passwordMatch = await user.isPasswordCorrect(uid, password, req.ip);
-		if (!passwordMatch) {
-			return next(new Error('[[error:invalid-login-credentials]]'));
+		try {
+			const passwordMatch = await user.isPasswordCorrect(uid, password, req.ip);
+			if (!passwordMatch) {
+				return next(new Error('[[error:invalid-login-credentials]]'));
+			}
+		} catch (e) {
+			if (req.loggedIn) {
+				await logoutAsync(req);
+				await destroyAsync(req);
+			}
+			throw e;
 		}
 
 		next(null, userData, '[[success:authentication-successful]]');
@@ -452,9 +459,7 @@ authenticationController.localLogin = async function (req, username, password, n
 	}
 };
 
-const destroyAsync = util.promisify((req, callback) => req.session.destroy(callback));
-
-authenticationController.logout = async function (req, res, next) {
+authenticationController.logout = async function (req, res) {
 	if (!req.loggedIn || !req.sessionID) {
 		res.clearCookie(nconf.get('sessionKey'), meta.configs.cookie.get());
 		return res.status(200).send('not-logged-in');
@@ -464,30 +469,28 @@ authenticationController.logout = async function (req, res, next) {
 
 	try {
 		await user.auth.revokeSession(sessionID, uid);
-		req.logout();
-
+		await logoutAsync(req);
 		await destroyAsync(req);
 		res.clearCookie(nconf.get('sessionKey'), meta.configs.cookie.get());
-		req.uid = 0;
-		req.headers['x-csrf-token'] = req.csrfToken();
 
 		await user.setUserField(uid, 'lastonline', Date.now() - (meta.config.onlineCutoff * 60000));
 		await db.sortedSetAdd('users:online', Date.now() - (meta.config.onlineCutoff * 60000), uid);
-		await plugins.hooks.fire('static:user.loggedOut', { req: req, res: res, uid: uid, sessionID: sessionID });
+		await plugins.hooks.fire('static:user.loggedOut', { req, res, uid, sessionID });
 
 		// Force session check for all connected socket.io clients with the same session id
 		sockets.in(`sess_${sessionID}`).emit('checkSession', 0);
 		const payload = {
 			next: `${nconf.get('relative_path')}/`,
 		};
-		plugins.hooks.fire('filter:user.logout', payload);
+		await plugins.hooks.fire('filter:user.logout', payload);
 
 		if (req.body.noscript === 'true') {
 			return res.redirect(payload.next);
 		}
 		res.status(200).send(payload);
 	} catch (err) {
-		next(err);
+		winston.error(`${req.method} ${req.originalUrl}\n${err.stack}`);
+		res.status(500).send(err.message);
 	}
 };
 

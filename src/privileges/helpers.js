@@ -6,15 +6,16 @@ const validator = require('validator');
 
 const groups = require('../groups');
 const user = require('../user');
+const categories = require('../categories');
 const plugins = require('../plugins');
 const translator = require('../translator');
-const utils = require('../utils');
 
 const helpers = module.exports;
 
 const uidToSystemGroup = {
 	0: 'guests',
 	'-1': 'spiders',
+	'-2': 'fediverse',
 };
 
 helpers.isUsersAllowedTo = async function (privilege, uids, cid) {
@@ -116,6 +117,11 @@ helpers.getUserPrivileges = async function (cid, userPrivileges) {
 		for (let x = 0, numPrivs = userPrivileges.length; x < numPrivs; x += 1) {
 			member.privileges[userPrivileges[x]] = memberSets[x].includes(parseInt(member.uid, 10));
 		}
+		const types = {};
+		for (const [key] of Object.entries(member.privileges)) {
+			types[key] = getType(key);
+		}
+		member.types = types;
 	});
 
 	return memberData;
@@ -149,16 +155,29 @@ helpers.getGroupPrivileges = async function (cid, groupPrivileges) {
 		for (let x = 0, numPrivs = groupPrivileges.length; x < numPrivs; x += 1) {
 			memberPrivs[groupPrivileges[x]] = memberSets[x].includes(member);
 		}
+		const types = {};
+		for (const [key] of Object.entries(memberPrivs)) {
+			types[key] = getType(key);
+		}
 		return {
 			name: validator.escape(member),
 			nameEscaped: translator.escape(validator.escape(member)),
 			privileges: memberPrivs,
+			types: types,
 			isPrivate: groupData[index] && !!groupData[index].private,
 			isSystem: groupData[index] && !!groupData[index].system,
 		};
 	});
 	return memberData;
 };
+
+
+function getType(privilege) {
+	privilege = privilege.replace(/^groups:/, '');
+	const global = require('./global');
+	const categories = require('./categories');
+	return global.getType(privilege) || categories.getType(privilege) || 'other';
+}
 
 function moveToFront(groupNames, groupToMove) {
 	const index = groupNames.indexOf(groupToMove);
@@ -185,11 +204,43 @@ helpers.giveOrRescind = async function (method, privileges, cids, members) {
 };
 
 helpers.userOrGroupPrivileges = async function (cid, uidOrGroup, privilegeList) {
-	const tasks = {};
-	privilegeList.forEach((privilege) => {
-		tasks[privilege] = groups.isMember(uidOrGroup, `cid:${cid}:privileges:${privilege}`);
+	const groupNames = privilegeList.map(privilege => `cid:${cid}:privileges:${privilege}`);
+	const isMembers = await groups.isMemberOfGroups(uidOrGroup, groupNames);
+	return _.zipObject(privilegeList, isMembers);
+};
+
+helpers.getUidsWithPrivilege = async (cids, privilege) => {
+	const disabled = (await categories.getCategoriesFields(cids, ['disabled'])).map(obj => obj.disabled);
+
+	const groupNames = cids.reduce((memo, cid) => {
+		memo.push(`cid:${cid}:privileges:${privilege}`);
+		memo.push(`cid:${cid}:privileges:groups:${privilege}`);
+		return memo;
+	}, []);
+
+	const memberSets = await groups.getMembersOfGroups(groupNames);
+	// Every other set is actually a list of user groups, not uids, so convert those to members
+	const sets = memberSets.reduce((memo, set, idx) => {
+		if (idx % 2) {
+			memo.groupNames.push(set);
+		} else {
+			memo.uids.push(set);
+		}
+
+		return memo;
+	}, { groupNames: [], uids: [] });
+
+	const uniqGroups = _.uniq(_.flatten(sets.groupNames));
+	const groupUids = await groups.getMembersOfGroups(uniqGroups);
+	const map = _.zipObject(uniqGroups, groupUids);
+	const uidsByCid = cids.map((cid, index) => {
+		if (disabled[index]) {
+			return [];
+		}
+
+		return _.uniq(sets.uids[index].concat(_.flatten(sets.groupNames[index].map(g => map[g]))));
 	});
-	return await utils.promiseParallel(tasks);
+	return uidsByCid;
 };
 
 require('../promisify')(helpers);

@@ -46,12 +46,11 @@ module.exports = function (User) {
 		let userData = {
 			username: data.username,
 			userslug: data.userslug,
-			email: data.email || '',
 			joindate: timestamp,
 			lastonline: timestamp,
 			status: 'online',
 		};
-		['picture', 'fullname', 'location', 'birthday'].forEach((field) => {
+		['picture', 'fullname', 'birthday'].forEach((field) => {
 			if (data[field]) {
 				userData[field] = data[field];
 			}
@@ -77,9 +76,6 @@ module.exports = function (User) {
 		const isFirstUser = uid === 1;
 		userData.uid = uid;
 
-		if (isFirstUser) {
-			userData['email:confirmed'] = 1;
-		}
 		await db.setObject(`user:${uid}`, userData);
 
 		const bulkAdd = [
@@ -97,23 +93,24 @@ module.exports = function (User) {
 			bulkAdd.push(['fullname:sorted', 0, `${userData.fullname.toLowerCase()}:${userData.uid}`]);
 		}
 
-		const groupsToJoin = ['registered-users'].concat(
-			isFirstUser ? 'verified-users' : 'unverified-users'
-		);
-
 		await Promise.all([
 			db.incrObjectField('global', 'userCount'),
 			analytics.increment('registrations'),
 			db.sortedSetAddBulk(bulkAdd),
-			groups.join(groupsToJoin, userData.uid),
+			groups.join(['registered-users', 'unverified-users'], userData.uid),
 			User.notifications.sendWelcomeNotification(userData.uid),
 			storePassword(userData.uid, data.password),
 			User.updateDigestSetting(userData.uid, meta.config.dailyDigestFreq),
 		]);
 
-		if (userData.email && userData.uid > 1) {
-			User.email.sendValidationEmail(userData.uid, {
-				email: userData.email,
+		if (data.email && isFirstUser) {
+			await User.setUserField(uid, 'email', data.email);
+			await User.email.confirmByUid(userData.uid);
+		}
+
+		if (data.email && userData.uid > 1) {
+			await User.email.sendValidationEmail(userData.uid, {
+				email: data.email,
 				template: 'welcome',
 				subject: `[[email:welcome-to, ${meta.config.title || meta.config.browserTitle || 'NodeBB'}]]`,
 			}).catch(err => winston.error(`[user.create] Validation email failed to send\n[emailer.send] ${err.stack}`));
@@ -169,7 +166,7 @@ module.exports = function (User) {
 		}
 
 		if (password.length < meta.config.minimumPasswordLength) {
-			throw new Error('[[reset_password:password_too_short]]');
+			throw new Error('[[reset_password:password-too-short]]');
 		}
 
 		if (password.length > 512) {
@@ -178,7 +175,7 @@ module.exports = function (User) {
 
 		const strength = zxcvbn(password);
 		if (strength.score < minStrength) {
-			throw new Error('[[user:weak_password]]');
+			throw new Error('[[user:weak-password]]');
 		}
 	};
 
@@ -187,7 +184,7 @@ module.exports = function (User) {
 		let { username } = userData;
 		while (true) {
 			/* eslint-disable no-await-in-loop */
-			const exists = await meta.userOrGroupExists(username);
+			const exists = await meta.slugTaken(username);
 			if (!exists) {
 				return numTries ? username : null;
 			}

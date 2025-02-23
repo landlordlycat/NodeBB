@@ -18,6 +18,7 @@ module.exports = function (Categories) {
 		let cids = await findCids(query, data.hardCap);
 
 		const result = await plugins.hooks.fire('filter:categories.search', {
+			data: data,
 			cids: cids,
 			uid: uid,
 		});
@@ -37,7 +38,7 @@ module.exports = function (Categories) {
 
 		const childrenCids = await getChildrenCids(cids, uid);
 		const uniqCids = _.uniq(cids.concat(childrenCids));
-		const categoryData = await Categories.getCategories(uniqCids, uid);
+		const categoryData = await Categories.getCategories(uniqCids);
 
 		Categories.getTree(categoryData, 0);
 		await Categories.getRecentTopicReplies(categoryData, uid, data.qs);

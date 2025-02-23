@@ -1,10 +1,10 @@
 'use strict';
 
-const colors = require('colors/safe');
 const nconf = require('nconf');
 const validator = require('validator');
 const querystring = require('querystring');
 const _ = require('lodash');
+const chalk = require('chalk');
 
 const translator = require('../translator');
 const user = require('../user');
@@ -13,6 +13,7 @@ const categories = require('../categories');
 const plugins = require('../plugins');
 const meta = require('../meta');
 const middlewareHelpers = require('../middleware/helpers');
+const utils = require('../utils');
 
 const helpers = module.exports;
 
@@ -57,9 +58,10 @@ helpers.buildQueryString = function (query, key, value) {
 
 helpers.addLinkTags = function (params) {
 	params.res.locals.linkTags = params.res.locals.linkTags || [];
+	const page = params.page > 1 ? `?page=${params.page}` : '';
 	params.res.locals.linkTags.push({
 		rel: 'canonical',
-		href: `${url}/${params.url}`,
+		href: `${url}/${params.url}${page}`,
 	});
 
 	params.tags.forEach((rel) => {
@@ -123,10 +125,15 @@ helpers.buildTerms = function (url, term, query) {
 helpers.notAllowed = async function (req, res, error) {
 	({ error } = await plugins.hooks.fire('filter:helpers.notAllowed', { req, res, error }));
 
+	await plugins.hooks.fire('response:helpers.notAllowed', { req, res, error });
+	if (res.headersSent) {
+		return;
+	}
+
 	if (req.loggedIn || req.uid === -1) {
 		if (res.locals.isAPI) {
 			if (req.originalUrl.startsWith(`${relative_path}/api/v3`)) {
-				helpers.formatApiResponse(403, res, error);
+				await helpers.formatApiResponse(403, res, error);
 			} else {
 				res.status(403).json({
 					path: req.path.replace(/^\/api/, ''),
@@ -148,7 +155,7 @@ helpers.notAllowed = async function (req, res, error) {
 		}
 	} else if (res.locals.isAPI) {
 		req.session.returnTo = req.url.replace(/^\/api/, '');
-		helpers.formatApiResponse(401, res, error);
+		await helpers.formatApiResponse(401, res, error);
 	} else {
 		req.session.returnTo = req.url;
 		res.redirect(`${relative_path}/login${req.path.startsWith('/admin') ? '?local=1' : ''}`);
@@ -159,9 +166,9 @@ helpers.redirect = function (res, url, permanent) {
 	// this is used by sso plugins to redirect to the auth route
 	// { external: '/auth/sso' } or { external: 'https://domain/auth/sso' }
 	if (url.hasOwnProperty('external')) {
-		const redirectUrl = encodeURI(prependRelativePath(url.external));
+		const redirectUrl = prependRelativePath(url.external);
 		if (res.locals.isAPI) {
-			res.set('X-Redirect', redirectUrl).status(200).json({ external: redirectUrl });
+			res.set('X-Redirect', encodeURIComponent(redirectUrl)).status(200).json({ external: redirectUrl });
 		} else {
 			res.redirect(permanent ? 308 : 307, redirectUrl);
 		}
@@ -169,10 +176,9 @@ helpers.redirect = function (res, url, permanent) {
 	}
 
 	if (res.locals.isAPI) {
-		url = encodeURI(url);
-		res.set('X-Redirect', url).status(200).json(url);
+		res.set('X-Redirect', encodeURIComponent(url)).status(200).json(url);
 	} else {
-		res.redirect(permanent ? 308 : 307, encodeURI(prependRelativePath(url)));
+		res.redirect(permanent ? 308 : 307, prependRelativePath(url));
 	}
 };
 
@@ -190,7 +196,7 @@ helpers.buildCategoryBreadcrumbs = async function (cid) {
 		if (!data.disabled && !data.isSection) {
 			breadcrumbs.unshift({
 				text: String(data.name),
-				url: `${relative_path}/category/${data.slug}`,
+				url: `${url}/category/${data.slug}`,
 				cid: cid,
 			});
 		}
@@ -199,13 +205,13 @@ helpers.buildCategoryBreadcrumbs = async function (cid) {
 	if (meta.config.homePageRoute && meta.config.homePageRoute !== 'categories') {
 		breadcrumbs.unshift({
 			text: '[[global:header.categories]]',
-			url: `${relative_path}/categories`,
+			url: `${url}/categories`,
 		});
 	}
 
 	breadcrumbs.unshift({
-		text: '[[global:home]]',
-		url: `${relative_path}/`,
+		text: meta.config.homePageTitle || '[[global:home]]',
+		url: url,
 	});
 
 	return breadcrumbs;
@@ -214,15 +220,15 @@ helpers.buildCategoryBreadcrumbs = async function (cid) {
 helpers.buildBreadcrumbs = function (crumbs) {
 	const breadcrumbs = [
 		{
-			text: '[[global:home]]',
-			url: `${relative_path}/`,
+			text: meta.config.homePageTitle || '[[global:home]]',
+			url: url,
 		},
 	];
 
 	crumbs.forEach((crumb) => {
 		if (crumb) {
 			if (crumb.url) {
-				crumb.url = relative_path + crumb.url;
+				crumb.url = `${utils.isRelativeUrl(crumb.url) ? `${url}/` : ''}${crumb.url}`;
 			}
 			breadcrumbs.push(crumb);
 		}
@@ -232,17 +238,18 @@ helpers.buildBreadcrumbs = function (crumbs) {
 };
 
 helpers.buildTitle = function (pageTitle) {
-	const titleLayout = meta.config.titleLayout || '{pageTitle} | {browserTitle}';
+	pageTitle = pageTitle || '';
+	const titleLayout = meta.config.titleLayout || `${pageTitle ? '{pageTitle} | ' : ''}{browserTitle}`;
 
 	const browserTitle = validator.escape(String(meta.config.browserTitle || meta.config.title || 'NodeBB'));
-	pageTitle = pageTitle || '';
+
 	const title = titleLayout.replace('{pageTitle}', () => pageTitle).replace('{browserTitle}', () => browserTitle);
 	return title;
 };
 
 helpers.getCategories = async function (set, uid, privilege, selectedCid) {
 	const cids = await categories.getCidsByPrivilege(set, uid, privilege);
-	return await getCategoryData(cids, uid, selectedCid, privilege);
+	return await getCategoryData(cids, uid, selectedCid, Object.values(categories.watchStates), privilege);
 };
 
 helpers.getCategoriesByStates = async function (uid, selectedCid, states, privilege = 'topics:read') {
@@ -251,44 +258,23 @@ helpers.getCategoriesByStates = async function (uid, selectedCid, states, privil
 };
 
 async function getCategoryData(cids, uid, selectedCid, states, privilege) {
-	if (selectedCid && !Array.isArray(selectedCid)) {
-		selectedCid = [selectedCid];
-	}
-	selectedCid = selectedCid && selectedCid.map(String);
-
-	const visibleCategories = await helpers.getVisibleCategories({
-		cids, uid, states, privilege, showLinks: false,
-	});
+	const [visibleCategories, selectData] = await Promise.all([
+		helpers.getVisibleCategories({
+			cids, uid, states, privilege, showLinks: false,
+		}),
+		helpers.getSelectedCategory(selectedCid),
+	]);
 
 	const categoriesData = categories.buildForSelectCategories(visibleCategories, ['disabledClass']);
 
-	let selectedCategory = [];
-	const selectedCids = [];
 	categoriesData.forEach((category) => {
-		category.selected = selectedCid ? selectedCid.includes(String(category.cid)) : false;
-		if (category.selected) {
-			selectedCategory.push(category);
-			selectedCids.push(category.cid);
-		}
+		category.selected = selectData.selectedCids.includes(category.cid);
 	});
-	selectedCids.sort((a, b) => a - b);
-
-	if (selectedCategory.length > 1) {
-		selectedCategory = {
-			icon: 'fa-plus',
-			name: '[[unread:multiple-categories-selected]]',
-			bgColor: '#ddd',
-		};
-	} else if (selectedCategory.length === 1) {
-		selectedCategory = selectedCategory[0];
-	} else {
-		selectedCategory = null;
-	}
-
+	selectData.selectedCids.sort((a, b) => a - b);
 	return {
 		categories: categoriesData,
-		selectedCategory: selectedCategory,
-		selectedCids: selectedCids,
+		selectedCategory: selectData.selectedCategory,
+		selectedCids: selectData.selectedCids,
 	};
 }
 
@@ -347,46 +333,72 @@ helpers.getVisibleCategories = async function (params) {
 	});
 };
 
-helpers.getSelectedCategory = async function (cid) {
-	if (cid && !Array.isArray(cid)) {
-		cid = [cid];
+helpers.getSelectedCategory = async function (cids) {
+	if (cids && !Array.isArray(cids)) {
+		cids = [cids];
 	}
-	cid = cid && cid.map(cid => parseInt(cid, 10));
-	let selectedCategories = await categories.getCategoriesData(cid);
-
+	cids = cids && cids.map(cid => parseInt(cid, 10));
+	let selectedCategories = await categories.getCategoriesData(cids);
+	const selectedCids = selectedCategories.map(c => c && c.cid).filter(Boolean);
 	if (selectedCategories.length > 1) {
 		selectedCategories = {
 			icon: 'fa-plus',
 			name: '[[unread:multiple-categories-selected]]',
 			bgColor: '#ddd',
 		};
-	} else if (selectedCategories.length === 1) {
+	} else if (selectedCategories.length === 1 && selectedCategories[0]) {
 		selectedCategories = selectedCategories[0];
 	} else {
 		selectedCategories = null;
 	}
 	return {
-		selectedCids: cid || [],
+		selectedCids: selectedCids,
 		selectedCategory: selectedCategories,
 	};
 };
 
+helpers.getSelectedTag = function (tags) {
+	if (tags && !Array.isArray(tags)) {
+		tags = [tags];
+	}
+	tags = tags || [];
+	const tagData = tags.map(t => validator.escape(String(t)));
+	let selectedTag = null;
+	if (tagData.length) {
+		selectedTag = {
+			label: tagData.join(', '),
+		};
+	}
+	return {
+		selectedTags: tagData,
+		selectedTag: selectedTag,
+	};
+};
+
 helpers.trimChildren = function (category) {
-	if (Array.isArray(category.children)) {
+	if (category && Array.isArray(category.children)) {
 		category.children = category.children.slice(0, category.subCategoriesPerPage);
 		category.children.forEach((child) => {
-			child.children = undefined;
+			if (category.isSection) {
+				helpers.trimChildren(child);
+			} else {
+				child.children = undefined;
+			}
 		});
 	}
 };
 
 helpers.setCategoryTeaser = function (category) {
 	if (Array.isArray(category.posts) && category.posts.length && category.posts[0]) {
+		const post = category.posts[0];
 		category.teaser = {
-			url: `${nconf.get('relative_path')}/post/${category.posts[0].pid}`,
-			timestampISO: category.posts[0].timestampISO,
-			pid: category.posts[0].pid,
-			topic: category.posts[0].topic,
+			url: `${nconf.get('relative_path')}/post/${post.pid}`,
+			timestampISO: post.timestampISO,
+			pid: post.pid,
+			tid: post.tid,
+			index: post.index,
+			topic: post.topic,
+			user: post.user,
 		};
 	}
 };
@@ -441,19 +453,34 @@ helpers.formatApiResponse = async (statusCode, res, payload) => {
 	}
 
 	if (String(statusCode).startsWith('2')) {
+		if (res.req.loggedIn) {
+			res.set('cache-control', 'private');
+		}
+
+		let code = 'ok';
+		let message = 'OK';
+		switch (statusCode) {
+			case 202:
+				code = 'accepted';
+				message = 'Accepted';
+				break;
+
+			case 204:
+				code = 'no-content';
+				message = 'No Content';
+				break;
+		}
+
 		res.status(statusCode).json({
-			status: {
-				code: 'ok',
-				message: 'OK',
-			},
+			status: { code, message },
 			response: payload || {},
 		});
-	} else if (payload instanceof Error) {
-		const { message } = payload;
+	} else if (payload instanceof Error || typeof payload === 'string') {
+		const message = payload instanceof Error ? payload.message : payload;
 		const response = {};
 
 		// Update status code based on some common error codes
-		switch (payload.message) {
+		switch (message) {
 			case '[[error:user-banned]]':
 				Object.assign(response, await generateBannedResponse(res));
 				// intentional fall through
@@ -465,20 +492,30 @@ helpers.formatApiResponse = async (statusCode, res, payload) => {
 			case '[[error:invalid-uid]]':
 				statusCode = 401;
 				break;
+
+			case '[[error:no-topic]]':
+				statusCode = 404;
+				break;
 		}
 
-		const returnPayload = await helpers.generateError(statusCode, message);
+		if (message.startsWith('[[error:required-parameters-missing, ')) {
+			const params = message.slice('[[error:required-parameters-missing, '.length, -2).split(' ');
+			Object.assign(response, { params });
+		}
+
+		const returnPayload = await helpers.generateError(statusCode, message, res);
 		returnPayload.response = response;
 
 		if (global.env === 'development') {
 			returnPayload.stack = payload.stack;
-			process.stdout.write(`[${colors.yellow('api')}] Exception caught, error with stack trace follows:\n`);
+			process.stdout.write(`[${chalk.yellow('api')}] Exception caught, error with stack trace follows:\n`);
 			process.stdout.write(payload.stack);
 		}
 		res.status(statusCode).json(returnPayload);
-	} else if (!payload) {
+	} else {
 		// Non-2xx statusCode, generate predefined error
-		const returnPayload = await helpers.generateError(statusCode);
+		const message = payload ? String(payload) : null;
+		const returnPayload = await helpers.generateError(statusCode, message, res);
 		res.status(statusCode).json(returnPayload);
 	}
 };
@@ -502,15 +539,21 @@ async function generateBannedResponse(res) {
 	return response;
 }
 
-helpers.generateError = async (statusCode, message) => {
+helpers.generateError = async (statusCode, message, res) => {
+	async function translateMessage(message) {
+		const { req } = res;
+		const settings = req.query.lang ? null : await user.getSettings(req.uid);
+		const language = String(req.query.lang || settings.userLang || meta.config.defaultLang);
+		return await translator.translate(message, language);
+	}
 	if (message && message.startsWith('[[')) {
-		message = await translator.translate(message);
+		message = await translateMessage(message);
 	}
 
 	const payload = {
 		status: {
 			code: 'internal-server-error',
-			message: message || await translator.translate(`[[error:api.${statusCode}]]`),
+			message: message || await translateMessage(`[[error:api.${statusCode}]]`),
 		},
 		response: {},
 	};

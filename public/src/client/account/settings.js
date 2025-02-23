@@ -1,27 +1,33 @@
 'use strict';
 
 
-define('forum/account/settings', ['forum/account/header', 'components', 'translator', 'api'], function (header, components, translator, api) {
-	var	AccountSettings = {};
-
+define('forum/account/settings', [
+	'forum/account/header', 'components', 'api', 'alerts', 'hooks',
+], function (header, components, api, alerts, hooks) {
+	const AccountSettings = {};
+	let savedSkin = '';
 	// If page skin is changed but not saved, switch the skin back
 	$(window).on('action:ajaxify.start', function () {
-		if (ajaxify.data.template.name === 'account/settings' && $('#bootswatchSkin').val() !== config.bootswatchSkin) {
-			reskin(config.bootswatchSkin);
+		const skinEl = $('#bootswatchSkin');
+		if (
+			ajaxify.data.template.name === 'account/settings' &&
+			skinEl.length && skinEl.val() !== savedSkin) {
+			reskin(savedSkin);
 		}
 	});
 
 	AccountSettings.init = function () {
+		savedSkin = $('#bootswatchSkin').length && $('#bootswatchSkin').val();
 		header.init();
 
 		$('#submitBtn').on('click', function () {
-			var settings = loadSettings();
+			const settings = loadSettings();
 
 			if (settings.homePageRoute === 'custom' && settings.homePageCustom) {
 				$.get(config.relative_path + '/' + settings.homePageCustom, function () {
 					saveSettings(settings);
 				}).fail(function () {
-					app.alertError('[[error:invalid-home-page-route]]');
+					alerts.error('[[error:invalid-home-page-route]]');
 				});
 			} else {
 				saveSettings(settings);
@@ -42,11 +48,11 @@ define('forum/account/settings', ['forum/account/header', 'components', 'transla
 	};
 
 	function loadSettings() {
-		var settings = {};
+		const settings = {};
 
 		$('.account').find('input, textarea, select').each(function (id, input) {
 			input = $(input);
-			var setting = input.attr('data-property');
+			const setting = input.attr('data-property');
 			if (input.is('select')) {
 				settings[setting] = input.val();
 				return;
@@ -67,79 +73,93 @@ define('forum/account/settings', ['forum/account/header', 'components', 'transla
 
 	function saveSettings(settings) {
 		api.put(`/users/${ajaxify.data.uid}/settings`, { settings }).then((newSettings) => {
-			app.alertSuccess('[[success:settings-saved]]');
-			var languageChanged = false;
-			for (var key in newSettings) {
+			alerts.success('[[success:settings-saved]]');
+			let languageChanged = false;
+			for (const key in newSettings) {
 				if (newSettings.hasOwnProperty(key)) {
 					if (key === 'userLang' && config.userLang !== newSettings.userLang) {
 						languageChanged = true;
 					}
-					if (config.hasOwnProperty(key)) {
+					if (key === 'bootswatchSkin') {
+						savedSkin = newSettings.bootswatchSkin;
+						config.bootswatchSkin = savedSkin === 'noskin' ? '' : savedSkin;
+					} else if (config.hasOwnProperty(key)) {
 						config[key] = newSettings[key];
 					}
 				}
 			}
 
 			if (languageChanged && parseInt(app.user.uid, 10) === parseInt(ajaxify.data.theirid, 10)) {
-				translator.translate('[[language:dir]]', config.userLang, function (translated) {
-					var htmlEl = $('html');
-					htmlEl.attr('data-dir', translated);
-					htmlEl.css('direction', translated);
-				});
-
-				translator.switchTimeagoLanguage(utils.userLangToTimeagoCode(config.userLang), function () {
-					overrides.overrideTimeago();
-					ajaxify.refresh();
-				});
+				window.location.reload();
 			}
 		});
 	}
 
 	function toggleCustomRoute() {
 		if ($('[data-property="homePageRoute"]').val() === 'custom') {
-			$('#homePageCustom').show();
+			$('#homePageCustomContainer').show();
 		} else {
-			$('#homePageCustom').hide();
+			$('#homePageCustomContainer').hide();
 			$('[data-property="homePageCustom"]').val('');
 		}
 	}
 
 	function reskin(skinName) {
-		var clientEl = Array.prototype.filter.call(document.querySelectorAll('link[rel="stylesheet"]'), function (el) {
+		const clientEl = Array.prototype.filter.call(document.querySelectorAll('link[rel="stylesheet"]'), function (el) {
 			return el.href.indexOf(config.relative_path + '/assets/client') !== -1;
 		})[0] || null;
 		if (!clientEl) {
 			return;
 		}
 
-		var currentSkinClassName = $('body').attr('class').split(/\s+/).filter(function (className) {
+		if (skinName === '') {
+			skinName = config.defaultBootswatchSkin || '';
+		} else if (skinName === 'noskin') {
+			skinName = '';
+		}
+
+		const currentSkinClassName = $('body').attr('class').split(/\s+/).filter(function (className) {
 			return className.startsWith('skin-');
 		});
 		if (!currentSkinClassName[0]) {
 			return;
 		}
-		var currentSkin = currentSkinClassName[0].slice(5);
+		let currentSkin = currentSkinClassName[0].slice(5);
 		currentSkin = currentSkin !== 'noskin' ? currentSkin : '';
 
 		// Stop execution if skin didn't change
 		if (skinName === currentSkin) {
+			hooks.fire('action:skin.change', { skin: skinName, currentSkin });
 			return;
 		}
-
-		var linkEl = document.createElement('link');
+		const langDir = $('html').attr('data-dir');
+		const linkEl = document.createElement('link');
 		linkEl.rel = 'stylesheet';
 		linkEl.type = 'text/css';
-		linkEl.href = config.relative_path + '/assets/client' + (skinName ? '-' + skinName : '') + '.css';
+		linkEl.href = config.relative_path +
+			'/assets/client' + (skinName ? '-' + skinName : '') +
+			(langDir === 'rtl' ? '-rtl' : '') +
+			'.css?' + config['cache-buster'];
 		linkEl.onload = function () {
 			clientEl.parentNode.removeChild(clientEl);
 
 			// Update body class with proper skin name
 			$('body').removeClass(currentSkinClassName.join(' '));
 			$('body').addClass('skin-' + (skinName || 'noskin'));
+			hooks.fire('action:skin.change', { skin: skinName, currentSkin });
 		};
 
 		document.head.appendChild(linkEl);
 	}
+
+	AccountSettings.changeSkin = async function (skin) {
+		if (app.user.uid) {
+			await api.put(`/users/${app.user.uid}/settings`, { settings: { bootswatchSkin: skin } });
+		}
+		config.bootswatchSkin = skin === 'noskin' ? '' : skin;
+		savedSkin = skin;
+		reskin(skin);
+	};
 
 	return AccountSettings;
 });

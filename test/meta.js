@@ -2,13 +2,14 @@
 
 const assert = require('assert');
 const async = require('async');
-const request = require('request');
+
 const nconf = require('nconf');
 
 const db = require('./mocks/databasemock');
 const meta = require('../src/meta');
 const User = require('../src/user');
 const Groups = require('../src/groups');
+const request = require('../src/request');
 
 describe('meta', () => {
 	let fooUid;
@@ -19,9 +20,9 @@ describe('meta', () => {
 		Groups.cache.reset();
 		// Create 3 users: 1 admin, 2 regular
 		async.series([
-			async.apply(User.create, { username: 'foo', password: 'barbar' }),	// admin
-			async.apply(User.create, { username: 'baz', password: 'quuxquux' }),	// restricted user
-			async.apply(User.create, { username: 'herp', password: 'derpderp' }),	// regular user
+			async.apply(User.create, { username: 'foo', password: 'barbar' }), // admin
+			async.apply(User.create, { username: 'baz', password: 'quuxquux' }), // restricted user
+			async.apply(User.create, { username: 'herp', password: 'derpderp' }), // regular user
 		], (err, uids) => {
 			if (err) {
 				return done(err);
@@ -489,117 +490,92 @@ describe('meta', () => {
 	});
 
 	describe('Access-Control-Allow-Origin', () => {
-		it('Access-Control-Allow-Origin header should be empty', (done) => {
+		it('Access-Control-Allow-Origin header should be empty', async () => {
 			const jar = request.jar();
-			request.get(`${nconf.get('url')}/api/search?term=bug`, {
-				form: {},
-				json: true,
+			const { response } = await request.get(`${nconf.get('url')}/api/search?term=bug`, {
 				jar: jar,
-			}, (err, response, body) => {
-				assert.ifError(err);
-				assert.equal(response.headers['access-control-allow-origin'], undefined);
-				done();
 			});
+
+			assert.equal(response.headers['access-control-allow-origin'], undefined);
 		});
 
-		it('should set proper Access-Control-Allow-Origin header', (done) => {
+		it('should set proper Access-Control-Allow-Origin header', async () => {
 			const jar = request.jar();
 			const oldValue = meta.config['access-control-allow-origin'];
 			meta.config['access-control-allow-origin'] = 'test.com, mydomain.com';
-			request.get(`${nconf.get('url')}/api/search?term=bug`, {
-				form: {
-				},
-				json: true,
+			const { response } = await request.get(`${nconf.get('url')}/api/search?term=bug`, {
 				jar: jar,
 				headers: {
 					origin: 'mydomain.com',
 				},
-			}, (err, response, body) => {
-				assert.ifError(err);
-				assert.equal(response.headers['access-control-allow-origin'], 'mydomain.com');
-				meta.config['access-control-allow-origin'] = oldValue;
-				done(err);
 			});
+
+			assert.equal(response.headers['access-control-allow-origin'], 'mydomain.com');
+			meta.config['access-control-allow-origin'] = oldValue;
 		});
 
-		it('Access-Control-Allow-Origin header should be empty if origin does not match', (done) => {
+		it('Access-Control-Allow-Origin header should be empty if origin does not match', async () => {
 			const jar = request.jar();
 			const oldValue = meta.config['access-control-allow-origin'];
 			meta.config['access-control-allow-origin'] = 'test.com, mydomain.com';
-			request.get(`${nconf.get('url')}/api/search?term=bug`, {
-				form: {
-				},
-				json: true,
+			const { response } = await request.get(`${nconf.get('url')}/api/search?term=bug`, {
+				data: {},
 				jar: jar,
 				headers: {
 					origin: 'notallowed.com',
 				},
-			}, (err, response, body) => {
-				assert.ifError(err);
-				assert.equal(response.headers['access-control-allow-origin'], undefined);
-				meta.config['access-control-allow-origin'] = oldValue;
-				done(err);
 			});
+			assert.equal(response.headers['access-control-allow-origin'], undefined);
+			meta.config['access-control-allow-origin'] = oldValue;
 		});
 
-		it('should set proper Access-Control-Allow-Origin header', (done) => {
+		it('should set proper Access-Control-Allow-Origin header', async () => {
 			const jar = request.jar();
 			const oldValue = meta.config['access-control-allow-origin-regex'];
 			meta.config['access-control-allow-origin-regex'] = 'match\\.this\\..+\\.domain.com, mydomain\\.com';
-			request.get(`${nconf.get('url')}/api/search?term=bug`, {
-				form: {
-				},
-				json: true,
+			const { response } = await request.get(`${nconf.get('url')}/api/search?term=bug`, {
 				jar: jar,
 				headers: {
 					origin: 'match.this.anything123.domain.com',
 				},
-			}, (err, response, body) => {
-				assert.ifError(err);
-				assert.equal(response.headers['access-control-allow-origin'], 'match.this.anything123.domain.com');
-				meta.config['access-control-allow-origin-regex'] = oldValue;
-				done(err);
 			});
+
+			assert.equal(response.headers['access-control-allow-origin'], 'match.this.anything123.domain.com');
+			meta.config['access-control-allow-origin-regex'] = oldValue;
 		});
 
-		it('Access-Control-Allow-Origin header should be empty if origin does not match', (done) => {
+		it('Access-Control-Allow-Origin header should be empty if origin does not match', async () => {
 			const jar = request.jar();
 			const oldValue = meta.config['access-control-allow-origin-regex'];
 			meta.config['access-control-allow-origin-regex'] = 'match\\.this\\..+\\.domain.com, mydomain\\.com';
-			request.get(`${nconf.get('url')}/api/search?term=bug`, {
-				form: {
-				},
-				json: true,
+			const { response } = await request.get(`${nconf.get('url')}/api/search?term=bug`, {
 				jar: jar,
 				headers: {
 					origin: 'notallowed.com',
 				},
-			}, (err, response, body) => {
-				assert.ifError(err);
-				assert.equal(response.headers['access-control-allow-origin'], undefined);
-				meta.config['access-control-allow-origin-regex'] = oldValue;
-				done(err);
 			});
+			assert.equal(response.headers['access-control-allow-origin'], undefined);
+			meta.config['access-control-allow-origin-regex'] = oldValue;
 		});
 
-		it('should not error with invalid regexp', (done) => {
+		it('should not error with invalid regexp', async () => {
 			const jar = request.jar();
 			const oldValue = meta.config['access-control-allow-origin-regex'];
 			meta.config['access-control-allow-origin-regex'] = '[match\\.this\\..+\\.domain.com, mydomain\\.com';
-			request.get(`${nconf.get('url')}/api/search?term=bug`, {
-				form: {
-				},
-				json: true,
+			const { response } = await request.get(`${nconf.get('url')}/api/search?term=bug`, {
 				jar: jar,
 				headers: {
 					origin: 'mydomain.com',
 				},
-			}, (err, response, body) => {
-				assert.ifError(err);
-				assert.equal(response.headers['access-control-allow-origin'], 'mydomain.com');
-				meta.config['access-control-allow-origin-regex'] = oldValue;
-				done(err);
 			});
+			assert.equal(response.headers['access-control-allow-origin'], 'mydomain.com');
+			meta.config['access-control-allow-origin-regex'] = oldValue;
 		});
+	});
+
+	it('should log targets', (done) => {
+		const aliases = require('../src/meta/aliases');
+		aliases.buildTargets();
+		done();
 	});
 });

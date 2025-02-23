@@ -8,6 +8,7 @@ const events = require('../events');
 const db = require('../database');
 const privileges = require('../privileges');
 const websockets = require('./index');
+const batch = require('../batch');
 const index = require('./index');
 const getAdminSearchDict = require('../admin/search').getDictionary;
 
@@ -15,12 +16,10 @@ const SocketAdmin = module.exports;
 SocketAdmin.user = require('./admin/user');
 SocketAdmin.categories = require('./admin/categories');
 SocketAdmin.settings = require('./admin/settings');
-SocketAdmin.groups = require('./admin/groups');
 SocketAdmin.tags = require('./admin/tags');
 SocketAdmin.rewards = require('./admin/rewards');
 SocketAdmin.navigation = require('./admin/navigation');
 SocketAdmin.rooms = require('./admin/rooms');
-SocketAdmin.social = require('./admin/social');
 SocketAdmin.themes = require('./admin/themes');
 SocketAdmin.plugins = require('./admin/plugins');
 SocketAdmin.widgets = require('./admin/widgets');
@@ -30,7 +29,6 @@ SocketAdmin.email = require('./admin/email');
 SocketAdmin.analytics = require('./admin/analytics');
 SocketAdmin.logs = require('./admin/logs');
 SocketAdmin.errors = require('./admin/errors');
-SocketAdmin.uploads = require('./admin/uploads');
 SocketAdmin.digest = require('./admin/digest');
 SocketAdmin.cache = require('./admin/cache');
 
@@ -102,8 +100,8 @@ SocketAdmin.getSearchDict = async function (socket) {
 	return await getAdminSearchDict(lang);
 };
 
-SocketAdmin.deleteAllSessions = function (socket, data, callback) {
-	user.auth.deleteAllSessions(callback);
+SocketAdmin.deleteAllSessions = async function () {
+	await user.auth.deleteAllSessions();
 };
 
 SocketAdmin.reloadAllSessions = function (socket, data, callback) {
@@ -117,6 +115,14 @@ SocketAdmin.getServerTime = function (socket, data, callback) {
 	callback(null, {
 		timestamp: now.getTime(),
 		offset: now.getTimezoneOffset(),
+	});
+};
+
+SocketAdmin.clearSearchHistory = async function () {
+	const keys = await db.scan({ match: 'searches:*' });
+	await batch.processArray(keys, db.deleteAll, {
+		batch: 500,
+		interval: 0,
 	});
 };
 

@@ -2,15 +2,9 @@
 
 
 define('forum/unread', [
-	'topicSelect', 'components', 'topicList', 'categorySelector',
-], function (topicSelect, components, topicList, categorySelector) {
-	var Unread = {};
-
-	var watchStates = {
-		ignoring: 1,
-		notwatching: 2,
-		watching: 3,
-	};
+	'forum/header/unread', 'topicSelect', 'components', 'topicList', 'categorySelector', 'alerts', 'api',
+], function (headerUnread, topicSelect, components, topicList, categorySelector, alerts, api) {
+	const Unread = {};
 
 	Unread.init = function () {
 		app.enterRoom('unread_topics');
@@ -19,17 +13,17 @@ define('forum/unread', [
 
 		topicList.init('unread');
 
-		updateUnreadTopicCount('/' + ajaxify.data.selectedFilter.url, ajaxify.data.topicCount);
+		headerUnread.updateUnreadTopicCount('/' + ajaxify.data.selectedFilter.url, ajaxify.data.topicCount);
 	};
 
 	function handleMarkRead() {
 		function markAllRead() {
 			socket.emit('topics.markAllRead', function (err) {
 				if (err) {
-					return app.alertError(err.message);
+					return alerts.error(err);
 				}
 
-				app.alertSuccess('[[unread:topics_marked_as_read.success]]');
+				alerts.success('[[unread:topics-marked-as-read.success]]');
 
 				$('[component="category"]').empty();
 				$('[component="pagination"]').addClass('hidden');
@@ -39,39 +33,35 @@ define('forum/unread', [
 		}
 
 		function markSelectedRead() {
-			var tids = topicSelect.getSelectedTids();
+			const tids = topicSelect.getSelectedTids();
 			if (!tids.length) {
 				return;
 			}
-			socket.emit('topics.markAsRead', tids, function (err) {
-				if (err) {
-					return app.alertError(err.message);
-				}
 
+			Promise.all(tids.map(async tid => api.put(`/topics/${tid}/read`))).then(() => {
 				doneRemovingTids(tids);
 			});
 		}
 
 		function markCategoryRead(cid) {
 			function getCategoryTids(cid) {
-				var tids = [];
+				const tids = [];
 				components.get('category/topic', 'cid', cid).each(function () {
 					tids.push($(this).attr('data-tid'));
 				});
 				return tids;
 			}
-			var tids = getCategoryTids(cid);
+			const tids = getCategoryTids(cid);
 
 			socket.emit('topics.markCategoryTopicsRead', cid, function (err) {
 				if (err) {
-					return app.alertError(err.message);
+					return alerts.error(err);
 				}
 
 				doneRemovingTids(tids);
 			});
 		}
-
-		var selector = categorySelector.init($('[component="category-selector"]'), {
+		const selector = categorySelector.init($('[component="category-selector"]'), {
 			onSelect: function (category) {
 				selector.selectCategory(0);
 				if (category.cid === 'all') {
@@ -82,7 +72,7 @@ define('forum/unread', [
 					markCategoryRead(category.cid);
 				}
 			},
-			selectCategoryLabel: ajaxify.data.selectCategoryLabel || '[[unread:mark_as_read]]',
+			selectCategoryLabel: ajaxify.data.selectCategoryLabel || '[[unread:mark-as-read]]',
 			localCategories: [
 				{
 					cid: 'selected',
@@ -101,7 +91,7 @@ define('forum/unread', [
 	function doneRemovingTids(tids) {
 		removeTids(tids);
 
-		app.alertSuccess('[[unread:topics_marked_as_read.success]]');
+		alerts.success('[[unread:topics-marked-as-read.success]]');
 
 		if (!$('[component="category"]').children().length) {
 			$('#category-no-topics').removeClass('hidden');
@@ -110,90 +100,9 @@ define('forum/unread', [
 	}
 
 	function removeTids(tids) {
-		for (var i = 0; i < tids.length; i += 1) {
+		for (let i = 0; i < tids.length; i += 1) {
 			components.get('category/topic', 'tid', tids[i]).remove();
 		}
-	}
-
-	function updateUnreadTopicCount(url, count) {
-		if (!utils.isNumber(count)) {
-			return;
-		}
-
-		$('a[href="' + config.relative_path + url + '"].navigation-link i')
-			.toggleClass('unread-count', count > 0)
-			.attr('data-content', count > 99 ? '99+' : count);
-	}
-
-	Unread.initUnreadTopics = function () {
-		var unreadTopics = app.user.unreadData;
-
-		function onNewPost(data) {
-			if (data && data.posts && data.posts.length && unreadTopics) {
-				var post = data.posts[0];
-				if (parseInt(post.uid, 10) === parseInt(app.user.uid, 10) ||
-					(!post.topic.isFollowing && post.categoryWatchState !== watchStates.watching)
-				) {
-					return;
-				}
-
-				var tid = post.topic.tid;
-				if (!unreadTopics[''][tid] || !unreadTopics.new[tid] ||
-					!unreadTopics.watched[tid] || !unreadTopics.unreplied[tid]) {
-					markTopicsUnread(tid);
-				}
-
-				if (!unreadTopics[''][tid]) {
-					increaseUnreadCount('');
-					unreadTopics[''][tid] = true;
-				}
-				var isNewTopic = post.isMain && parseInt(post.uid, 10) !== parseInt(app.user.uid, 10);
-				if (isNewTopic && !unreadTopics.new[tid]) {
-					increaseUnreadCount('new');
-					unreadTopics.new[tid] = true;
-				}
-				var isUnreplied = parseInt(post.topic.postcount, 10) <= 1;
-				if (isUnreplied && !unreadTopics.unreplied[tid]) {
-					increaseUnreadCount('unreplied');
-					unreadTopics.unreplied[tid] = true;
-				}
-
-				if (post.topic.isFollowing && !unreadTopics.watched[tid]) {
-					increaseUnreadCount('watched');
-					unreadTopics.watched[tid] = true;
-				}
-			}
-		}
-
-		function increaseUnreadCount(filter) {
-			var unreadUrl = '/unread' + (filter ? '?filter=' + filter : '');
-			var newCount = 1 + parseInt($('a[href="' + config.relative_path + unreadUrl + '"].navigation-link i').attr('data-content'), 10);
-			updateUnreadTopicCount(unreadUrl, newCount);
-		}
-
-		function markTopicsUnread(tid) {
-			$('[data-tid="' + tid + '"]').addClass('unread');
-		}
-
-		$(window).on('action:ajaxify.end', function () {
-			if (ajaxify.data.template.topic) {
-				['', 'new', 'watched', 'unreplied'].forEach(function (filter) {
-					delete unreadTopics[filter][ajaxify.data.tid];
-				});
-			}
-		});
-		socket.removeListener('event:new_post', onNewPost);
-		socket.on('event:new_post', onNewPost);
-
-		socket.removeListener('event:unread.updateCount', updateUnreadCounters);
-		socket.on('event:unread.updateCount', updateUnreadCounters);
-	};
-
-	function updateUnreadCounters(data) {
-		updateUnreadTopicCount('/unread', data.unreadTopicCount);
-		updateUnreadTopicCount('/unread?filter=new', data.unreadNewTopicCount);
-		updateUnreadTopicCount('/unread?filter=watched', data.unreadWatchedTopicCount);
-		updateUnreadTopicCount('/unread?filter=unreplied', data.unreadUnrepliedTopicCount);
 	}
 
 	return Unread;

@@ -4,6 +4,7 @@
 	"dashboard/logins": "Girişler",
 	"dashboard/users": "Kullanıcılar",
 	"dashboard/topics": "Başlıklar",
+	"dashboard/searches": "Aramalar",
 	"section-general": "Genel",
 
 	"section-manage": "Yönet",
@@ -13,6 +14,7 @@
 	"manage/users": "Kullanıcılar",
 	"manage/admins-mods": "Yöneticiler ve Modlar",
 	"manage/registration": "Kayıt Kuyruğu",
+	"manage/flagged-content": "Flagged Content",
 	"manage/post-queue": "İleti Kuyruğu",
 	"manage/groups": "Gruplar",
 	"manage/ip-blacklist": "IP Kara Listesi",
@@ -36,6 +38,7 @@
 	"settings/tags": "Etiketler",
 	"settings/notifications": "Bildirimler",
 	"settings/api": "API Erişimi",
+	"settings/activitypub": "Federation (ActivityPub)",
 	"settings/sounds": "Sesler",
 	"settings/social": "Sosyal",
 	"settings/cookies": "Çerezler",
@@ -71,11 +74,13 @@
 	"development/info": "bilgi",
 
 	"rebuild-and-restart-forum": "Forumu Yeniden oluştur &amp; Yeniden Başlat",
+	"rebuild-and-restart": "Rebuild & Restart",
 	"restart-forum": "Forumu Yeniden Başlat",
+	"restart": "Restart",
 	"logout": "Çıkış",
 	"view-forum": "Forumu Görüntüle",
 
-	"search.placeholder": "Ayarları aramak için &quot;/&quot; işaretine tıklayın",
+	"search.placeholder": "Arama Ayarları",
 	"search.no-results": "Sonuç yok...",
 	"search.search-forum": "Forumda ara: <strong></strong>",
 	"search.keep-typing": "Sonuçları görmek için daha fazla yazın...",

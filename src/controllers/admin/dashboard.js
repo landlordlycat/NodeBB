@@ -4,6 +4,7 @@ const nconf = require('nconf');
 const semver = require('semver');
 const winston = require('winston');
 const _ = require('lodash');
+const validator = require('validator');
 
 const versions = require('../../admin/versions');
 const db = require('../../database');
@@ -18,12 +19,13 @@ const emailer = require('../../emailer');
 const dashboardController = module.exports;
 
 dashboardController.get = async function (req, res) {
-	const [stats, notices, latestVersion, lastrestart, isAdmin] = await Promise.all([
+	const [stats, notices, latestVersion, lastrestart, isAdmin, popularSearches] = await Promise.all([
 		getStats(),
 		getNotices(),
 		getLatestVersion(),
 		getLastRestart(),
 		user.isAdministrator(req.uid),
+		getPopularSearches(),
 	]);
 	const version = nconf.get('version');
 
@@ -38,6 +40,8 @@ dashboardController.get = async function (req, res) {
 		canRestart: !!process.send,
 		lastrestart: lastrestart,
 		showSystemControls: isAdmin,
+		popularSearches: popularSearches,
+		hideAllTime: true,
 	});
 };
 
@@ -125,12 +129,13 @@ async function getStats() {
 	}
 
 	let results = await Promise.all([
-		getStatsForSet('ip:recent', 'uniqueIPCount'),
+		getStatsFromAnalytics('uniquevisitors', ''),
 		getStatsFromAnalytics('logins', 'loginCount'),
 		getStatsForSet('users:joindate', 'userCount'),
 		getStatsForSet('posts:pid', 'postCount'),
 		getStatsForSet('topics:tid', 'topicCount'),
 	]);
+
 	results[0].name = '[[admin/dashboard:unique-visitors]]';
 
 	results[1].name = '[[admin/dashboard:logins]]';
@@ -185,7 +190,7 @@ async function getStatsFromAnalytics(set, field) {
 		today: data.slice(-1)[0],
 		lastweek: sum(data.slice(-14)),
 		thisweek: sum(data.slice(-7)),
-		lastmonth: sum(data.slice(0)),	// entire set
+		lastmonth: sum(data.slice(0)), // entire set
 		thismonth: sum(data.slice(-30)),
 		alltime: await getGlobalField(field),
 	};
@@ -223,6 +228,7 @@ function calculateDeltas(results) {
 }
 
 async function getGlobalField(field) {
+	if (!field) return 0;
 	const count = await db.getObjectField('global', field);
 	return parseInt(count, 10) || 0;
 }
@@ -236,6 +242,11 @@ async function getLastRestart() {
 	lastrestart.user = userData;
 	lastrestart.timestampISO = utils.toISOString(lastrestart.timestamp);
 	return lastrestart;
+}
+
+async function getPopularSearches() {
+	const searches = await db.getSortedSetRevRangeWithScores('searches:all', 0, 9);
+	return searches.map(s => ({ value: validator.escape(String(s.value)), score: s.score }));
 }
 
 dashboardController.getLogins = async (req, res) => {
@@ -266,7 +277,7 @@ dashboardController.getLogins = async (req, res) => {
 
 	res.render('admin/dashboard/logins', {
 		set: 'logins',
-		query: req.query,
+		query: _.pick(req.query, ['units', 'until', 'count']),
 		stats,
 		summary,
 		sessions,
@@ -294,7 +305,7 @@ dashboardController.getUsers = async (req, res) => {
 
 	res.render('admin/dashboard/users', {
 		set: 'registrations',
-		query: req.query,
+		query: _.pick(req.query, ['units', 'until', 'count']),
 		stats,
 		summary,
 		users,
@@ -321,9 +332,62 @@ dashboardController.getTopics = async (req, res) => {
 
 	res.render('admin/dashboard/topics', {
 		set: 'topics',
-		query: req.query,
+		query: _.pick(req.query, ['units', 'until', 'count']),
 		stats,
 		summary,
 		topics: topicData,
+	});
+};
+
+dashboardController.getSearches = async (req, res) => {
+	let start = 0;
+	let end = 0;
+	if (req.query.start) {
+		start = new Date(req.query.start);
+		start.setHours(24, 0, 0, 0);
+		end = new Date();
+		end.setHours(24, 0, 0, 0);
+	}
+	if (req.query.end) {
+		end = new Date(req.query.end);
+		end.setHours(24, 0, 0, 0);
+	}
+
+	let searches;
+	if (start && end && start <= end) {
+		const daysArr = [start];
+		const nextDay = new Date(start.getTime());
+		while (nextDay < end) {
+			nextDay.setDate(nextDay.getDate() + 1);
+			nextDay.setHours(0, 0, 0, 0);
+			daysArr.push(new Date(nextDay.getTime()));
+		}
+
+		const daysData = await Promise.all(
+			daysArr.map(async d => db.getSortedSetRevRangeWithScores(`searches:${d.getTime()}`, 0, -1))
+		);
+
+		const map = {};
+		daysData.forEach((d) => {
+			d.forEach((search) => {
+				if (!map[search.value]) {
+					map[search.value] = search.score;
+				} else {
+					map[search.value] += search.score;
+				}
+			});
+		});
+
+		searches = Object.keys(map)
+			.map(key => ({ value: key, score: map[key] }))
+			.sort((a, b) => b.score - a.score);
+	} else {
+		searches = await db.getSortedSetRevRangeWithScores('searches:all', 0, 99);
+	}
+
+	res.render('admin/dashboard/searches', {
+		searches: searches.map(s => ({ value: validator.escape(String(s.value)), score: s.score })),
+		startDate: req.query.start ? validator.escape(String(req.query.start)) : null,
+		endDate: req.query.end ? validator.escape(String(req.query.end)) : null,
 	});
 };

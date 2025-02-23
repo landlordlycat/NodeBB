@@ -10,6 +10,7 @@ const plugins = require('../plugins');
 const meta = require('../meta');
 const user = require('../user');
 const categories = require('../categories');
+const activitypub = require('../activitypub');
 const privileges = require('../privileges');
 const social = require('../social');
 
@@ -69,8 +70,12 @@ Topics.getTopicsByTids = async function (tids, options) {
 
 	async function loadTopics() {
 		const topics = await Topics.getTopicsData(tids);
-		const uids = _.uniq(topics.map(t => t && t.uid && t.uid.toString()).filter(v => utils.isNumber(v)));
-		const cids = _.uniq(topics.map(t => t && t.cid && t.cid.toString()).filter(v => utils.isNumber(v)));
+		const uids = _.uniq(topics
+			.map(t => t && t.uid && t.uid.toString())
+			.filter(v => utils.isNumber(v) || activitypub.helpers.isUri(v)));
+		const cids = _.uniq(topics
+			.map(t => t && t.cid && t.cid.toString())
+			.filter(v => utils.isNumber(v)));
 		const guestTopics = topics.filter(t => t && t.uid === 0);
 
 		async function loadGuestHandles() {
@@ -116,10 +121,10 @@ Topics.getTopicsByTids = async function (tids, options) {
 		};
 	}
 
-	const [result, hasRead, isIgnored, bookmarks, callerSettings] = await Promise.all([
+	const [result, hasRead, followData, bookmarks, callerSettings] = await Promise.all([
 		loadTopics(),
 		Topics.hasReadTopics(tids, uid),
-		Topics.isIgnoring(tids, uid),
+		Topics.getFollowData(tids, uid),
 		Topics.getUserBookmarks(tids, uid),
 		user.getSettings(uid),
 	]);
@@ -136,11 +141,12 @@ Topics.getTopicsByTids = async function (tids, options) {
 			}
 			topic.teaser = result.teasers[i] || null;
 			topic.isOwner = topic.uid === parseInt(uid, 10);
-			topic.ignored = isIgnored[i];
-			topic.unread = parseInt(uid, 10) > 0 && !hasRead[i] && !isIgnored[i];
-			topic.bookmark = sortNewToOld ?
+			topic.ignored = followData[i].ignoring;
+			topic.followed = followData[i].following;
+			topic.unread = parseInt(uid, 10) <= 0 || (!hasRead[i] && !topic.ignored);
+			topic.bookmark = bookmarks[i] && (sortNewToOld ?
 				Math.max(1, topic.postcount + 2 - bookmarks[i]) :
-				Math.min(topic.postcount, bookmarks[i] + 1);
+				Math.min(topic.postcount, bookmarks[i] + 1));
 			topic.unreplied = !topic.teaser;
 
 			topic.icons = [];
@@ -164,11 +170,12 @@ Topics.getTopicWithPosts = async function (topicData, set, uid, start, stop, rev
 		postSharing,
 		deleter,
 		merger,
+		forker,
 		related,
 		thumbs,
 		events,
 	] = await Promise.all([
-		getMainPostAndReplies(topicData, set, uid, start, stop, reverse),
+		Topics.getTopicPosts(topicData, set, start, stop, uid, reverse),
 		categories.getCategoryData(topicData.cid),
 		categories.getTagWhitelist([topicData.cid]),
 		plugins.hooks.fire('filter:topic.thread_tools', { topic: topicData, uid: uid, tools: [] }),
@@ -177,14 +184,23 @@ Topics.getTopicWithPosts = async function (topicData, set, uid, start, stop, rev
 		social.getActivePostSharing(),
 		getDeleter(topicData),
 		getMerger(topicData),
+		getForker(topicData),
 		Topics.getRelatedTopics(topicData, uid),
 		Topics.thumbs.load([topicData]),
-		Topics.events.get(topicData.tid, uid),
+		Topics.events.get(topicData.tid, uid, reverse),
 	]);
 
 	topicData.thumbs = thumbs[0];
 	topicData.posts = posts;
-	topicData.events = events;
+	topicData.posts.forEach((p) => {
+		p.events = events.filter(
+			event => event.timestamp >= p.eventStart && event.timestamp < p.eventEnd
+		);
+		p.eventStart = undefined;
+		p.eventEnd = undefined;
+		p.events = mergeConsecutiveShareEvents(p.events);
+	});
+
 	topicData.category = category;
 	topicData.tagWhitelist = tagWhitelist[0];
 	topicData.minTags = category.minTags;
@@ -203,6 +219,10 @@ Topics.getTopicWithPosts = async function (topicData, set, uid, start, stop, rev
 	if (merger) {
 		topicData.mergedTimestampISO = utils.toISOString(topicData.mergedTimestamp);
 	}
+	topicData.forker = forker;
+	if (forker) {
+		topicData.forkTimestampISO = utils.toISOString(topicData.forkTimestamp);
+	}
 	topicData.related = related || [];
 	topicData.unreplied = topicData.postcount === 1;
 	topicData.icons = [];
@@ -211,37 +231,22 @@ Topics.getTopicWithPosts = async function (topicData, set, uid, start, stop, rev
 	return result.topic;
 };
 
-async function getMainPostAndReplies(topic, set, uid, start, stop, reverse) {
-	let repliesStart = start;
-	let repliesStop = stop;
-	if (stop > 0) {
-		repliesStop -= 1;
-		if (start > 0) {
-			repliesStart -= 1;
+function mergeConsecutiveShareEvents(arr) {
+	return arr.reduce((acc, curr) => {
+		const last = acc[acc.length - 1];
+		if (last && last.type === curr.type && last.type === 'share') {
+			if (!last.items) {
+				last.items = [{ ...last }];
+				['user', 'text', 'timestamp', 'timestampISO'].forEach(field => delete last[field]);
+			}
+			last.items.push(curr);
+		} else {
+			acc.push(curr);
 		}
-	}
-	const pids = await posts.getPidsFromSet(set, repliesStart, repliesStop, reverse);
-	if (!pids.length && !topic.mainPid) {
-		return [];
-	}
-
-	if (topic.mainPid && start === 0) {
-		pids.unshift(topic.mainPid);
-	}
-	const postData = await posts.getPostsByPids(pids, uid);
-	if (!postData.length) {
-		return [];
-	}
-	let replies = postData;
-	if (topic.mainPid && start === 0) {
-		postData[0].index = 0;
-		replies = postData.slice(1);
-	}
-
-	Topics.calculatePostIndices(replies, repliesStart);
-
-	return await Topics.addPostData(postData, uid);
+		return acc;
+	}, []);
 }
+
 
 async function getDeleter(topicData) {
 	if (!parseInt(topicData.deleterUid, 10)) {
@@ -265,6 +270,21 @@ async function getMerger(topicData) {
 	return merger;
 }
 
+async function getForker(topicData) {
+	if (!parseInt(topicData.forkerUid, 10)) {
+		return null;
+	}
+	const [
+		forker,
+		forkedFromTitle,
+	] = await Promise.all([
+		user.getUserFields(topicData.forkerUid, ['username', 'userslug', 'picture']),
+		Topics.getTopicField(topicData.forkedFromTid, 'title'),
+	]);
+	forker.forkedFromTitle = forkedFromTitle;
+	return forker;
+}
+
 Topics.getMainPost = async function (tid, uid) {
 	const mainPosts = await Topics.getMainPosts([tid], uid);
 	return Array.isArray(mainPosts) && mainPosts.length ? mainPosts[0] : null;
@@ -284,7 +304,8 @@ Topics.getMainPosts = async function (tids, uid) {
 };
 
 async function getMainPosts(mainPids, uid) {
-	const postData = await posts.getPostsByPids(mainPids, uid);
+	let postData = await posts.getPostsByPids(mainPids, uid);
+	postData = await user.blocks.filter(uid, postData);
 	postData.forEach((post) => {
 		if (post) {
 			post.index = 0;
@@ -299,11 +320,15 @@ Topics.isLocked = async function (tid) {
 };
 
 Topics.search = async function (tid, term) {
-	const pids = await plugins.hooks.fire('filter:topic.search', {
+	if (!tid || !term) {
+		throw new Error('[[error:invalid-data]]');
+	}
+	const result = await plugins.hooks.fire('filter:topic.search', {
 		tid: tid,
 		term: term,
+		ids: [],
 	});
-	return Array.isArray(pids) ? pids : [];
+	return Array.isArray(result) ? result : result.ids;
 };
 
 require('../promisify')(Topics);

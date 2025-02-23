@@ -3,47 +3,56 @@
 const cacheController = module.exports;
 
 const utils = require('../../utils');
+const plugins = require('../../plugins');
 
-cacheController.get = function (req, res) {
-	const postCache = require('../../posts/cache');
+cacheController.get = async function (req, res) {
+	const postCache = require('../../posts/cache').getOrCreate();
 	const groupCache = require('../../groups').cache;
 	const { objectCache } = require('../../database');
 	const localCache = require('../../cache');
-
+	const uptimeInSeconds = process.uptime();
 	function getInfo(cache) {
 		return {
 			length: cache.length,
 			max: cache.max,
+			maxSize: cache.maxSize,
 			itemCount: cache.itemCount,
-			percentFull: ((cache.length / cache.max) * 100).toFixed(2),
+			percentFull: cache.name === 'post' ?
+				((cache.length / cache.maxSize) * 100).toFixed(2) :
+				((cache.itemCount / cache.max) * 100).toFixed(2),
 			hits: utils.addCommas(String(cache.hits)),
+			hitsPerSecond: (cache.hits / uptimeInSeconds).toFixed(2),
 			misses: utils.addCommas(String(cache.misses)),
 			hitRatio: ((cache.hits / (cache.hits + cache.misses) || 0)).toFixed(4),
 			enabled: cache.enabled,
+			ttl: cache.ttl,
 		};
 	}
-
-	const data = {
-		postCache: getInfo(postCache),
-		groupCache: getInfo(groupCache),
-		localCache: getInfo(localCache),
+	let caches = {
+		post: postCache,
+		group: groupCache,
+		local: localCache,
 	};
-
 	if (objectCache) {
-		data.objectCache = getInfo(objectCache);
+		caches.object = objectCache;
+	}
+	caches = await plugins.hooks.fire('filter:admin.cache.get', caches);
+	for (const [key, value] of Object.entries(caches)) {
+		caches[key] = getInfo(value);
 	}
 
-	res.render('admin/advanced/cache', data);
+	res.render('admin/advanced/cache', { caches });
 };
 
-cacheController.dump = function (req, res, next) {
-	const caches = {
-		post: require('../../posts/cache'),
+cacheController.dump = async function (req, res, next) {
+	let caches = {
+		post: require('../../posts/cache').getOrCreate(),
 		object: require('../../database').objectCache,
 		group: require('../../groups').cache,
 		local: require('../../cache'),
 	};
-	if (!caches[req.query.name]) {
+	caches = await plugins.hooks.fire('filter:admin.cache.get', caches);
+	if (!caches.hasOwnProperty(req.query.name)) {
 		return next();
 	}
 

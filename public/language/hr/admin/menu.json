@@ -4,6 +4,7 @@
 	"dashboard/logins": "Logins",
 	"dashboard/users": "Users",
 	"dashboard/topics": "Topics",
+	"dashboard/searches": "Searches",
 	"section-general": "Glavno",
 
 	"section-manage": "Upravljanje",
@@ -13,6 +14,7 @@
 	"manage/users": "Korisnici",
 	"manage/admins-mods": "Admins & Mods",
 	"manage/registration": "Lista zahtjeva za registraciju",
+	"manage/flagged-content": "Flagged Content",
 	"manage/post-queue": "Post Queue",
 	"manage/groups": "Grupe",
 	"manage/ip-blacklist": "IP blokade",
@@ -36,6 +38,7 @@
 	"settings/tags": "Oznake",
 	"settings/notifications": "Obavijesti",
 	"settings/api": "API Access",
+	"settings/activitypub": "Federation (ActivityPub)",
 	"settings/sounds": "Sounds",
 	"settings/social": "Social",
 	"settings/cookies": "Kolačići",
@@ -71,11 +74,13 @@
 	"development/info": "Info",
 
 	"rebuild-and-restart-forum": "Rebuild & Restart Forum",
+	"rebuild-and-restart": "Rebuild & Restart",
 	"restart-forum": "ponovno pokreni forum",
+	"restart": "Restart",
 	"logout": "Odjava",
 	"view-forum": "Pogledaj forum",
 
-	"search.placeholder": "Press &quot;/&quot; to search for settings",
+	"search.placeholder": "Search settings",
 	"search.no-results": "Nema rezultata ...",
 	"search.search-forum": "Pretraži forum za <strong></strong>",
 	"search.keep-typing": "Upiši više da vidiš rezultate ...",
